@@ -193,8 +193,6 @@ def optimize(
             batch = extract_batch_data(batch_item, input_key=input_key)
         batch = batch.to(device)
 
-        print(batch.shape)
-        exit()
         target_out, pre_weight_acts = model.forward_with_pre_forward_cache_hooks(
             batch, module_names=list(components.keys())
         )
