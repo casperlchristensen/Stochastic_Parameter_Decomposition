@@ -51,7 +51,7 @@ def optim_scale_fn(
     optimizer: torch.optim.Optimizer,
     key: str = "square_avg",
     normalize: bool = False,
-): 
+):
     square_avg = optimizer.state[target_weights][key]
     if normalize:
         square_avg = square_avg / (square_avg.mean() + 1e-8)

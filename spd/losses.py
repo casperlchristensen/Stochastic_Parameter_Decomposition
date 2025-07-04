@@ -193,7 +193,7 @@ def _calc_tensors_mse(
     scaled_faithfulness_loss = torch.tensor(0.0, device=device)
     for name in params1:
         diff = params2[name] - params1[name]
-        faithfulness_loss += ((diff ** 2).sum() * scalers[name])
+        faithfulness_loss += (diff ** 2).sum()
         scaled_faithfulness_loss += (scalers[name] * ((params2[name] - params1[name]) ** 2)).sum()
     return faithfulness_loss / n_params, scaled_faithfulness_loss / n_params
 
