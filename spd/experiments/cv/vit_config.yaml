@@ -28,7 +28,7 @@ embedding_recon_coeff: null
 is_embed_unembed_recon: false
 pnorm: 1.0
 output_loss_type: mse
-faithfulness_scale: rms
+faithfulness_scale: null
 
 # --- Training ---
 batch_size: 64

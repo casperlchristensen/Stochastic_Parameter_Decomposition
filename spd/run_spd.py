@@ -356,7 +356,7 @@ def optimize(
         # --- Backward Pass & Optimize --- #
         # Skip gradient step if we are at the last step (last step just for plotting and logging)
         if step != config.steps:
-            total_loss.backward(retain_graph=True)
+            total_loss.backward(retain_graph=False)
             if config.faithfulness_scale == "rms" and rms_opt is not None:
                 rms_opt.step()
 
