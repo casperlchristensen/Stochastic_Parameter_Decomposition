@@ -70,6 +70,7 @@ def component_activation_statistics(
         for module_name in components
     }
     data_iter = iter(dataloader)
+    n_steps = min(n_steps, len(dataloader))
     for _ in range(n_steps):
         # --- Get Batch --- #
         batch, _ = extract_batch_data(next(data_iter), input_key=input_key)
