@@ -261,3 +261,12 @@ def calc_kl_divergence_lm(
     p = torch.softmax(target, dim=-1)  # P
     kl = F.kl_div(log_q, p, reduction="none")  # P · (log P − log Q)
     return kl.sum(dim=-1).mean()  # Σ_vocab / (batch·seq)
+
+
+def calc_mean_squared_error(
+    pred: Float[Tensor, "..."],
+    target: Float[Tensor, "..."],
+) -> Float[Tensor, ""]:
+    """Calculate the mean squared error loss."""
+    assert pred.shape == target.shape
+    return F.mse_loss(pred, target, reduction="mean")  # Mean over all dimensions

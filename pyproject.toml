@@ -2,7 +2,7 @@
 name = "spd"
 version = "0.0.1"
 description = "Sparse Parameter Decomposition"
-requires-python = ">=3.11"
+requires-python = "==3.12"
 urls = { "Homepage" = "https://github.com/goodfire-ai/spd" }
 license = { text = "MIT" }
 readme = "README.md"
@@ -18,7 +18,7 @@ dependencies = [
     "transformers",
     "jaxtyping",
     "einops",
-    "matplotlib==3.9.1",  # Avoid frequent pyright errors with new matplotlib versions
+    "matplotlib==3.9.1", # Avoid frequent pyright errors with new matplotlib versions
     "numpy",
     "python-dotenv",
     "wandb",
@@ -26,6 +26,7 @@ dependencies = [
     "streamlit",
     "streamlit-antd-components",
     "datasets",
+    "pillow>=11.2.1",
 ]
 
 [project.optional-dependencies]

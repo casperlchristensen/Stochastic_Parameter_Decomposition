@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Callable, Literal, Tuple
 
 import einops
 import torch
@@ -174,9 +174,10 @@ def calc_masked_recon_loss(
 def _calc_tensors_mse(
     params1: dict[str, Float[Tensor, "d_in d_out"]],
     params2: dict[str, Float[Tensor, "d_in d_out"]],
+    scalers: dict[str, Float[Tensor, ""]],
     n_params: int,
     device: str,
-) -> Float[Tensor, ""]:
+) -> Tuple[Float[Tensor, ""], Float[Tensor, ""]]:
     """Calculate the MSE between params1 and params2, summing over the d_in and d_out dimensions.
 
     Normalizes by the number of parameters in the model.
@@ -184,39 +185,49 @@ def _calc_tensors_mse(
     Args:
         params1: The first set of parameters
         params2: The second set of parameters
+        scalers: A dictionary of scalers for each parameter, used to weight the loss
         n_params: The number of parameters in the model
         device: The device to use for calculations
     """
     faithfulness_loss = torch.tensor(0.0, device=device)
+    scaled_faithfulness_loss = torch.tensor(0.0, device=device)
     for name in params1:
-        faithfulness_loss = faithfulness_loss + ((params2[name] - params1[name]) ** 2).sum()
-    return faithfulness_loss / n_params
+        diff = params2[name] - params1[name]
+        faithfulness_loss += ((diff ** 2).sum() * scalers[name])
+        scaled_faithfulness_loss += (scalers[name] * ((params2[name] - params1[name]) ** 2)).sum()
+    return faithfulness_loss / n_params, scaled_faithfulness_loss / n_params
 
 
 def calc_faithfulness_loss(
     components: dict[str, LinearComponent | EmbeddingComponent],
     target_model: nn.Module,
+    scale_fn: Callable[[Float[Tensor, ""]], Float[Tensor, ""]],
     n_params: int,
     device: str,
-) -> Float[Tensor, ""]:
+) -> Tuple[Float[Tensor, ""], Float[Tensor, ""]]:
     """Calculate the MSE loss between component parameters (A@B + bias) and target parameters."""
     target_params: dict[str, Float[Tensor, "d_in d_out"]] = {}
     component_params: dict[str, Float[Tensor, "d_in d_out"]] = {}
+    scalers_params: dict[str, Float[Tensor, ""]] = {}
 
     for comp_name, component in components.items():
         component_params[comp_name] = component.weight
         submodule = target_model.get_submodule(comp_name)
         assert isinstance(submodule, nn.Linear | nn.Embedding)
         target_params[comp_name] = submodule.weight
+        scalers_params[comp_name] = scale_fn(
+            submodule.weight
+        )
         assert component_params[comp_name].shape == target_params[comp_name].shape
 
-    faithfulness_loss = _calc_tensors_mse(
+    faithfulness_loss, scaled_faithfulness_loss = _calc_tensors_mse(
         params1=component_params,
         params2=target_params,
+        scalers=scalers_params,
         n_params=n_params,
         device=device,
     )
-    return faithfulness_loss
+    return faithfulness_loss, scaled_faithfulness_loss
 
 
 def calc_ce_losses(
@@ -279,6 +290,74 @@ def calc_ce_losses(
 
     return ce_losses
 
+def calc_accuracies(
+    model: ComponentModel,
+    batch: Int[Tensor, "..."],
+    components: dict[str, LinearComponent | EmbeddingComponent],
+    masks: dict[str, Float[Tensor, "..."]],
+    unmasked_component_logits: Float[Tensor, "..."],
+    masked_component_logits: Float[Tensor, "..."],
+    target_logits: Float[Tensor, "..."],
+    task: Literal["lm", "cv"] = "lm",
+) -> dict[str, float]:
+    """Calculate accuracies for various masking scenarios.
+
+    Args:
+        model: The component model
+        batch: Input batch
+        components: Dictionary of components
+        masks: Dictionary of masks for components
+        unmasked_component_logits: Logits from unmasked components
+        masked_component_logits: Logits from masked components
+        target_logits: Target model logits
+
+    Returns:
+        Dictionary containing accuracies for different scenarios
+    """
+    accuracies = {}
+
+    if task == "lm":
+        # Flatten logits and batch for accuracy calculation
+        flat_all_component_logits = einops.rearrange(
+            unmasked_component_logits, "... vocab -> (...) vocab"
+        )
+        flat_masked_component_logits = einops.rearrange(
+            masked_component_logits, "... vocab -> (...) vocab"
+        )
+        flat_batch = batch.flatten()
+
+        # Accuracy vs true labels
+        unmasked_accuracy = (flat_all_component_logits[:-1].argmax(dim=-1) == flat_batch[1:]).float().mean()
+        masked_accuracy = (flat_masked_component_logits[:-1].argmax(dim=-1) == flat_batch[1:]).float().mean()
+        target_accuracy = (target_logits[:-1].argmax(dim=-1) == flat_batch[1:]).float().mean()
+
+        # Accuracy when every component is fully masked (all-zero masks)
+        zero_masks = {k: torch.zeros_like(v) for k, v in masks.items()}
+        zero_masked_component_logits = model.forward_with_components(
+            batch, components=components, masks=zero_masks
+        )
+        flat_zero_masked_component_logits = einops.rearrange(
+            zero_masked_component_logits, "... vocab -> (...) vocab"
+        )
+        zero_masked_accuracy = (flat_zero_masked_component_logits[:-1].argmax(dim=-1) == flat_batch[1:]).float().mean()
+
+        accuracies["misc/unmasked_accuracy_vs_labels"] = unmasked_accuracy.item()
+        accuracies["misc/masked_accuracy_vs_labels"] = masked_accuracy.item()
+        accuracies["misc/target_accuracy_vs_labels"] = target_accuracy.item()
+        accuracies["misc/zero_masked_accuracy_vs_labels"] = zero_masked_accuracy.item()
+    elif task == "cv":
+        # For classification tasks, we assume the logits are already in the correct format
+        # and we can directly calculate accuracies.
+        unmasked_accuracy = (unmasked_component_logits.argmax(dim=-1) == batch).float().mean()
+        masked_accuracy = (masked_component_logits.argmax(dim=-1) == batch).float().mean()
+        target_accuracy = (target_logits.argmax(dim=-1) == batch).float().mean()
+
+        accuracies["misc/unmasked_accuracy_vs_labels"] = unmasked_accuracy.item()
+        accuracies["misc/masked_accuracy_vs_labels"] = masked_accuracy.item()
+        accuracies["misc/target_accuracy_vs_labels"] = target_accuracy.item()
+
+    return accuracies
+
 
 def calculate_losses(
     model: ComponentModel,
@@ -290,6 +369,7 @@ def calculate_losses(
     target_out: Tensor,
     device: str,
     n_params: int,
+    faithfulness_scale_fn: Callable[..., Float[Tensor, ""]]
 ) -> tuple[Float[Tensor, ""], dict[str, float]]:
     """Calculate all losses and return total loss and individual loss terms.
 
@@ -303,6 +383,7 @@ def calculate_losses(
         target_out: Target model output
         device: Device to run computations on
         n_params: Total number of parameters in the model
+        faithfulness_scale_fn: Function to scale the faithfulness loss
 
     Returns:
         Tuple of (total_loss, loss_terms_dict)
@@ -311,11 +392,12 @@ def calculate_losses(
     loss_terms = {}
 
     # Faithfulness loss
-    faithfulness_loss = calc_faithfulness_loss(
-        components=components, target_model=model.model, n_params=n_params, device=device
+    faithfulness_loss, scaled_faithfulness_loss = calc_faithfulness_loss(
+        components=components, target_model=model.model, n_params=n_params, scale_fn=faithfulness_scale_fn, device=device
     )
-    total_loss += config.faithfulness_coeff * faithfulness_loss
+    total_loss += config.faithfulness_coeff * scaled_faithfulness_loss
     loss_terms["loss/faithfulness"] = faithfulness_loss.item()
+    loss_terms["loss/scaled_faithfulness"] = scaled_faithfulness_loss.item()
 
     # Reconstruction loss
     if config.recon_coeff is not None:

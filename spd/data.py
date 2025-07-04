@@ -2,12 +2,13 @@ from typing import Any
 
 import numpy as np
 import torch
-from datasets import Dataset, IterableDataset, load_dataset
+from datasets import Dataset, IterableDataset, load_dataset, concatenate_datasets
 from datasets.distributed import split_dataset_by_node
 from numpy.typing import NDArray
+from PIL import Image
 from pydantic import BaseModel, ConfigDict
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, PreTrainedTokenizer
+from transformers import AutoImageProcessor, AutoTokenizer, PreTrainedTokenizer, BaseImageProcessor, default_data_collator
 
 """
 The bulk of this file is copied from https://github.com/ApolloResearch/e2e_sae
@@ -28,6 +29,15 @@ class DatasetConfig(BaseModel):
     """The name of the column in the dataset that contains the data (tokenized or non-tokenized).
     Typically 'input_ids' for datasets stored with e2e_sae/scripts/upload_hf_dataset.py, or "tokens"
     for datasets tokenized in TransformerLens (e.g. NeelNanda/pile-10k)."""
+
+
+class VisionDatasetConfig(BaseModel):
+    name: str = "ILSVRC/imagenet-1k"
+    split: str = "train"
+    streaming: bool = False
+    seed: int | None = None
+    buffer_size: int = 1000  # only used if streaming
+    hf_image_processor_path: str | None = None
 
 
 def _keep_single_column(dataset: Dataset, col_name: str) -> Dataset:
@@ -210,3 +220,83 @@ def create_data_loader(
         drop_last=True,
     )
     return loader, tokenizer
+
+
+def create_image_data_loader(
+    ds_cfg: VisionDatasetConfig,
+    batch_size: int,
+    buffer_size: int | None = None,
+    global_seed: int = 0,
+    ddp_rank: int = 0,
+    ddp_world_size: int = 1,
+    trust_remote_code: bool = False,
+    shuffle: bool = False,
+    balanced: bool = False,
+) -> tuple[DataLoader[Any], BaseImageProcessor]:
+    """Load vision dataset, return DataLoader & processor."""
+
+    # 1. Load dataset ---------------------------------------------------
+    dataset = load_dataset(
+        ds_cfg.name,
+        streaming=ds_cfg.streaming,
+        split=ds_cfg.split,
+        trust_remote_code=trust_remote_code,
+    )
+
+    # 2. Shuffle / seed handling ---------------------------------------
+    seed = ds_cfg.seed if ds_cfg.seed is not None else global_seed
+    if ds_cfg.streaming:
+        assert isinstance(dataset, IterableDataset)
+        dataset = dataset.shuffle(seed=seed, buffer_size=buffer_size or ds_cfg.buffer_size)
+    else:
+        dataset = dataset.shuffle(seed=seed)
+
+    # 3. DDP split ------------------------------------------------------
+    dataset = split_dataset_by_node(dataset, ddp_rank, ddp_world_size)  # type: ignore
+
+    if balanced:
+        labels = dataset["label"]
+        label_counts = np.bincount(labels, minlength=max(labels) + 1)
+        max_count = min(label_counts.tolist())
+        per_label_samples = [
+            dataset.filter(lambda ex, label=lbl: ex["label"] == label)
+            for lbl in range(max(labels) + 1)
+        ]
+        per_label_samples = [
+            ds.select(np.random.choice(len(ds), size=max_count, replace=False))
+            for ds in per_label_samples
+        ]
+        dataset = concatenate_datasets(
+            per_label_samples,
+        )
+
+    # 4. Image processor ------------------------------------------------
+    proc_path = ds_cfg.hf_image_processor_path or ds_cfg.name.split("/")[-1]
+    processor = AutoImageProcessor.from_pretrained(proc_path)
+
+    def _proc(ex): # type: ignore
+        # CHeck if it is a PIL image
+        image = ex["image"]
+        if not isinstance(image, Image.Image):
+            image = Image.fromarray(image)
+
+        # Convert grayscale or other modes to RGB
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        ex.update(processor(image, return_tensors="pt"))  # type: ignore
+        ex["pixel_values"] = ex["pixel_values"].squeeze()
+        ex.pop("image")
+        return ex
+
+    dataset = dataset.map(_proc, batched=False)
+    dataset.set_format("torch")
+
+    # 5. DataLoader -----------------------------------------------------
+    loader = DataLoader(
+        dataset,  # type: ignore
+        batch_size=batch_size,
+        shuffle=shuffle,
+        drop_last=True,
+        collate_fn=default_data_collator,
+    )
+    return loader, processor

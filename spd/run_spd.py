@@ -1,6 +1,7 @@
 """Run SPD on a model."""
 
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -16,6 +17,7 @@ from tqdm import tqdm
 from spd.configs import Config
 from spd.log import logger
 from spd.losses import (
+    calc_accuracies,
     calc_ce_losses,
     calculate_losses,
 )
@@ -33,10 +35,27 @@ from spd.plotting import (
 )
 from spd.utils import (
     calc_kl_divergence_lm,
+    calc_mean_squared_error,
     extract_batch_data,
     get_lr_schedule_fn,
     get_lr_with_warmup,
 )
+
+TASK_TO_INPUT_KEY = {
+    "lm": "input_ids",
+    "cv": "pixel_values",
+}
+
+def optim_scale_fn(
+    target_weights: Float[Tensor, ""],
+    optimizer: torch.optim.Optimizer,
+    key: str = "square_avg",
+    normalize: bool = False,
+): 
+    square_avg = optimizer.state[target_weights][key]
+    if normalize:
+        square_avg = square_avg / (square_avg.mean() + 1e-8)
+    return square_avg
 
 
 def get_common_run_name_suffix(config: Config) -> str:
@@ -87,6 +106,26 @@ def optimize(
         param.requires_grad = False
     logger.info("Target model parameters frozen.")
 
+    if config.faithfulness_scale == "rms":
+        non_bias_params = [
+            p for name, p in model.named_parameters() if "bias" not in name
+        ]
+        for p in non_bias_params:
+            p.requires_grad = True
+        rms_opt = torch.optim.RMSprop(
+            non_bias_params,
+            lr=0.0
+        )
+        faithfulness_scale_fn = partial(
+            optim_scale_fn,
+            key="square_avg",
+            optimizer=rms_opt,
+            normalize=True,
+        )
+    else:
+        rms_opt = None
+        faithfulness_scale_fn = lambda x: torch.tensor(1.0, device=x.device if hasattr(x, "device") else "cpu")
+
     # We used "-" instead of "." as module names can't have "." in them
     gates: dict[str, Gate | GateMLP] = {
         k.removeprefix("gates.").replace("-", "."): v for k, v in model.gates.items()
@@ -127,6 +166,8 @@ def optimize(
         layer_name: torch.zeros(config.C, device=device).bool() for layer_name in components
     }
 
+    input_key = TASK_TO_INPUT_KEY[config.task_config.task_name]
+
     # Iterate one extra step for final logging/plotting/saving
     for step in tqdm(range(config.steps + 1), ncols=0):
         step_lr = get_lr_with_warmup(
@@ -144,14 +185,16 @@ def optimize(
 
         try:
             batch_item = next(data_iter)
-            batch = extract_batch_data(batch_item)
+            batch = extract_batch_data(batch_item, input_key=input_key)
         except StopIteration:
             logger.warning("Dataloader exhausted, resetting iterator.")
             data_iter = iter(train_loader)
             batch_item = next(data_iter)
-            batch = extract_batch_data(batch_item)
+            batch = extract_batch_data(batch_item, input_key=input_key)
         batch = batch.to(device)
 
+        print(batch.shape)
+        exit()
         target_out, pre_weight_acts = model.forward_with_pre_forward_cache_hooks(
             batch, module_names=list(components.keys())
         )
@@ -174,6 +217,7 @@ def optimize(
             target_out=target_out,
             device=device,
             n_params=n_params,
+            faithfulness_scale_fn=faithfulness_scale_fn,
         )
 
         log_data["loss/total"] = total_loss.item()
@@ -209,6 +253,12 @@ def optimize(
                 log_data["misc/masked_kl_loss_vs_target"] = calc_kl_divergence_lm(
                     pred=masked_component_logits, target=target_logits
                 ).item()
+                log_data["misc/unmasked_mse_vs_target"] = calc_mean_squared_error(
+                    pred=unmasked_component_logits, target=target_logits
+                ).item()
+                log_data["misc/masked_mse_vs_target"] = calc_mean_squared_error(
+                    pred=masked_component_logits, target=target_logits
+                ).item()
 
                 if config.log_ce_losses:
                     ce_losses = calc_ce_losses(
@@ -221,6 +271,20 @@ def optimize(
                         target_logits=target_logits,
                     )
                     log_data.update(ce_losses)
+
+                if config.log_accuracies:
+                    if config.task_config.task_name in ["lm", "cv"]:
+                        acc = calc_accuracies(
+                            model=model,
+                            batch=batch,
+                            components=components,
+                            masks=causal_importances,
+                            unmasked_component_logits=unmasked_component_logits,
+                            masked_component_logits=masked_component_logits,
+                            target_logits=target_logits,
+                            task=config.task_config.task_name, # type: ignore[call-arg]
+                        )
+                        log_data.update(acc)
 
                 embed_ci_table = create_embed_ci_sample_table(causal_importances)
                 if embed_ci_table is not None:
@@ -289,6 +353,8 @@ def optimize(
         # Skip gradient step if we are at the last step (last step just for plotting and logging)
         if step != config.steps:
             total_loss.backward(retain_graph=True)
+            if config.faithfulness_scale == "rms" and rms_opt is not None:
+                rms_opt.step()
 
             if step % config.print_freq == 0 and config.wandb_project:
                 grad_norm: Float[Tensor, ""] = torch.zeros((), device=device)

@@ -82,6 +82,25 @@ class LMTaskConfig(BaseModel):
         description="Name of the dataset split used for evaluation",
     )
 
+class CVTaskConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    task_name: Literal["cv"] = Field(
+        default="cv",
+        description="Identifier for the vision decomposition task",
+    )
+    dataset_name: str = Field(
+        default="cifar10",
+        description="HuggingFace dataset identifier to use for the vision task",
+    )
+    train_data_split: str = Field(
+        default="train",
+        description="Name of the dataset split used for training",
+    )
+    eval_data_split: str = Field(
+        default="test",
+        description="Name of the dataset split used for evaluation",
+    )
+
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -169,6 +188,12 @@ class Config(BaseModel):
         description="Metric used to measure recon error between model outputs and targets",
     )
 
+    # --- Regularisation ---
+    faithfulness_scale: Literal["rms"] | None = Field(
+        default=None,
+        description="If 'rms', scale the faithfulness loss by the RMS of the target weights",
+    )
+
     # --- Training ---
     lr: PositiveFloat = Field(..., description="Learning rate for optimiser")
     steps: PositiveInt = Field(..., description="Total number of optimisation steps")
@@ -212,6 +237,10 @@ class Config(BaseModel):
         default=False,
         description="If True, additionally track cross-entropy losses during training",
     )
+    log_accuracies: bool = Field(
+        default=False,
+        description="If True, additionally track accuracies during training",
+    )
 
     # --- Pretrained model info ---
     pretrained_model_class: str = Field(
@@ -233,13 +262,13 @@ class Config(BaseModel):
         default=None,
         description="Name of the attribute on the forward output that contains logits or activations",
     )
-    tokenizer_name: str | None = Field(
+    preprocessor_name: str | None = Field(
         default=None,
-        description="Name or path of the tokenizer to use when loading an LM",
+        description="Name or path of the tokenizer or image processor to use when loading an LM",
     )
 
     # --- Task Specific ---
-    task_config: TMSTaskConfig | ResidualMLPTaskConfig | LMTaskConfig = Field(
+    task_config: TMSTaskConfig | ResidualMLPTaskConfig | LMTaskConfig | CVTaskConfig = Field(
         ...,
         discriminator="task_name",
         description="Nested task-specific configuration selected by the `task_name` discriminator",
