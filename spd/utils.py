@@ -216,7 +216,7 @@ def load_pretrained(
 def extract_batch_data(
     batch_item: dict[str, Any] | tuple[torch.Tensor, ...] | torch.Tensor,
     input_key: str = "input_ids",
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Extract input data from various batch formats.
 
     This utility function handles different batch formats commonly used across the codebase:
@@ -239,16 +239,19 @@ def extract_batch_data(
                 f"Key '{input_key}' not found in batch. Available keys: {available_keys}"
             )
         tensor = batch_item[input_key]
+        label = batch_item.get("labels", None)
     elif isinstance(batch_item, tuple):
         # Assume input is the first element
         tensor = batch_item[0]
+        label = batch_item[1] if len(batch_item) > 1 else None
     elif isinstance(batch_item, torch.Tensor):
         # Direct tensor format
         tensor = batch_item
+        label = None
     else:
         raise TypeError(f"Unsupported batch format: {type(batch_item)}. ")
 
-    return tensor
+    return tensor, label
 
 
 def calc_kl_divergence_lm(
