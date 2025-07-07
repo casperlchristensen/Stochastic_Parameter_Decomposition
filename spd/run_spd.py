@@ -112,7 +112,7 @@ def optimize(
     faithfulness_no_scale_fn = lambda x : torch.tensor(1.0, device=x.device if hasattr(x, "device") else "cpu")
     if config.faithfulness_scale == "rms":
         non_bias_params = [
-            p for name, p in model.named_parameters() if "bias" not in name
+            p for name, p in target_model.named_parameters() if "bias" not in name
         ]
         for p in non_bias_params:
             p.requires_grad = True

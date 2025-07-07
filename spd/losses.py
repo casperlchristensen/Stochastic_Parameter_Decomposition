@@ -194,7 +194,7 @@ def _calc_tensors_mse(
     for name in params1:
         diff = params2[name] - params1[name]
         faithfulness_loss += (diff ** 2).sum()
-        scaled_faithfulness_loss += ((scalers[name] * diff) ** 2).sum()
+        scaled_faithfulness_loss += (scalers[name] * (diff ** 2)).sum()
     return faithfulness_loss / n_params, scaled_faithfulness_loss / n_params
 
 
