@@ -101,6 +101,37 @@ class CVTaskConfig(BaseModel):
         description="Name of the dataset split used for evaluation",
     )
 
+class GraphGateConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    gate_type: Literal["graph"] = Field(
+        default="graph",
+        description="Type of graph gate to use for the decomposition",
+    )
+    use_fast_graph: bool = Field(
+        default=True,
+        description="If True, use the fast graph gate implementation",
+    )
+    d_subcomponent: PositiveInt = Field(
+        default=16,
+        description="Dimensionality of the subcomponents in the graph gate",
+    )
+    d_summary: PositiveInt = Field(
+        default=16,
+        description="Dimensionality of the summary vector in the graph gate",
+    )
+
+class GateMLPConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    gate_type: Literal["mlp"] = Field(
+        default="mlp",
+        description="Type of MLP gate to use for the decomposition",
+    )
+    n_ci_mlp_neurons: NonNegativeInt = Field(
+        default=0,
+        description="Number of hidden neurons in the MLP used to calculate the causal importance."
+        "If 0, use a single-layer gate.",
+    )
+
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -127,11 +158,6 @@ class Config(BaseModel):
     n_mask_samples: PositiveInt = Field(
         ...,
         description="Number of stochastic masks to sample when using stochastic recon losses",
-    )
-    n_ci_mlp_neurons: NonNegativeInt = Field(
-        default=0,
-        description="Number of hidden neurons in the MLP used to calculate the causal importance."
-        "If 0, use a single-layer gate.",
     )
     target_module_patterns: list[str] = Field(
         ...,
@@ -272,6 +298,12 @@ class Config(BaseModel):
         ...,
         discriminator="task_name",
         description="Nested task-specific configuration selected by the `task_name` discriminator",
+    )
+
+    gate_config: GraphGateConfig | GateMLPConfig = Field(
+        default_factory=lambda: GateMLPConfig(),
+        discriminator="gate_type",
+        description="Nested gate-specific configuration selected by the `gate_type` discriminator",
     )
 
     DEPRECATED_CONFIG_KEYS: ClassVar[list[str]] = []
