@@ -304,6 +304,13 @@ def optimize(
                 log_data["misc/clamped_mse_vs_target"] = calc_mean_squared_error(
                     pred=clamped_masked_component_logits, target=target_logits
                 ).item()
+                noisy_masks = {k: torch.randn_like(v) * config.noise_log_std for k, v in causal_importances.items()}
+                noisy_masked_component_logits = model.forward_with_components(
+                    batch, components=components, masks=noisy_masks
+                )
+                log_data["misc/noisy_kl_loss_vs_target"] = calc_kl_divergence_lm(
+                    pred=noisy_masked_component_logits, target=target_logits
+                ).item()
 
                 if config.log_ce_losses:
                     ce_losses = calc_ce_losses(
@@ -316,6 +323,7 @@ def optimize(
                         clamped_masked_component_logits=clamped_masked_component_logits,
                         stochastic_component_logits=stochastic_component_logits,
                         binned_masked_component_logits=binned_masked_component_logits,
+                        noisy_masked_component_logits=noisy_masked_component_logits,
                         target_logits=target_logits,
                         task=config.task_config.task_name,  # type: ignore[call-arg]
                         labels=labels,
@@ -331,6 +339,10 @@ def optimize(
                             masks=causal_importances,
                             all_components_logits=all_components_logits,
                             masked_component_logits=masked_component_logits,
+                            stochastic_component_logits=stochastic_component_logits,
+                            clamped_masked_component_logits=clamped_masked_component_logits,
+                            binned_masked_component_logits=binned_masked_component_logits,
+                            noisy_masked_component_logits=noisy_masked_component_logits,
                             target_logits=target_logits,
                             task=config.task_config.task_name, # type: ignore[call-arg]
                             labels=labels,

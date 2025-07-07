@@ -250,6 +250,10 @@ class Config(BaseModel):
         default=False,
         description="If True, additionally track accuracies during training",
     )
+    noise_log_std: float = Field(
+        default=0.2,
+        description="Standard deviation of the noise added to the causal importance masks",
+    )
 
     # --- Pretrained model info ---
     pretrained_model_class: str = Field(
