@@ -39,7 +39,7 @@ def get_run_name(
 
 
 def plot_lm_results(
-    mean_component_activation_counts: dict[str, Float[Tensor, " C"]],
+    mean_component_activation_counts: dict[str, Float[Tensor, " m"]],
 ) -> plt.Figure:
     """Plotting function for LM decomposition."""
 
@@ -48,11 +48,13 @@ def plot_lm_results(
     )
 
 
-def main(config_path_or_obj: Path | str | Config) -> None:
+def main(
+    config_path_or_obj: Path | str | Config, sweep_config_path: Path | str | None = None
+) -> None:
     config = load_config(config_path_or_obj, config_model=Config)
 
     if config.wandb_project:
-        config = init_wandb(config, config.wandb_project)
+        config = init_wandb(config, config.wandb_project, sweep_config_path)
 
     set_seed(config.seed)
     logger.info(config)
@@ -73,11 +75,18 @@ def main(config_path_or_obj: Path | str | Config) -> None:
     )
 
     # --- Setup Run Name and Output Dir --- #
-    run_name = get_run_name(
-        config,
-        pretrained_model_name=config.pretrained_model_name_hf,
-        max_seq_len=config.task_config.max_seq_len,
-    )
+    # run_name = get_run_name(
+    #     config,
+    #     pretrained_model_name=config.pretrained_model_name_hf,
+    #     max_seq_len=config.task_config.max_seq_len,
+    # )
+    from datetime import datetime
+
+    # Get current time
+    now = datetime.now()
+    time_str = now.strftime("%m-%d_%H.%M")  # Format: MMDD_HHMM
+
+    run_name = f"all_kl_{time_str}"
     if config.wandb_project:
         assert wandb.run, "wandb.run must be initialized before training"
         wandb.run.name = run_name
@@ -136,6 +145,7 @@ def main(config_path_or_obj: Path | str | Config) -> None:
     # TODO: Below not needed when TMS supports config.n_eval_steps
     assert config.n_eval_steps is not None, "n_eval_steps must be set"
     logger.info("Starting optimization...")
+    
     optimize(
         target_model=target_model,
         config=config,
@@ -154,3 +164,4 @@ def main(config_path_or_obj: Path | str | Config) -> None:
 
 if __name__ == "__main__":
     fire.Fire(main)
+    # main()

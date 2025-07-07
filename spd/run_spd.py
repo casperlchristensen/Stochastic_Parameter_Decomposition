@@ -26,6 +26,7 @@ from spd.models.component_utils import (
     calc_causal_importances,
     calc_ci_l_zero,
     component_activation_statistics,
+    calc_stochastic_masks,
 )
 from spd.models.components import EmbeddingComponent, Gate, GateMLP, LinearComponent
 from spd.plotting import (
@@ -239,23 +240,66 @@ def optimize(
                 masked_component_logits = model.forward_with_components(
                     batch, components=components, masks=causal_importances
                 )
-                unmasked_component_logits = model.forward_with_components(
-                    batch, components=components, masks=None
+                ones_masks = {k: torch.ones_like(v) for k, v in causal_importances.items()}
+                all_components_logits = model.forward_with_components(
+                    batch, components=components, masks=ones_masks
+                )
+                # stochastic
+                stochastic_masks = calc_stochastic_masks(
+                    causal_importances=causal_importances, n_mask_samples=config.n_mask_samples
+                )[0]
+                stochastic_component_logits = model.forward_with_components(
+                    batch, components=components, masks=stochastic_masks
                 )
 
                 target_logits = model(batch)
 
-                log_data["misc/unmasked_kl_loss_vs_target"] = calc_kl_divergence_lm(
-                    pred=unmasked_component_logits, target=target_logits
+                log_data["misc/all_components_kl_loss_vs_target"] = calc_kl_divergence_lm(
+                    pred=all_components_logits, target=target_logits
                 ).item()
                 log_data["misc/masked_kl_loss_vs_target"] = calc_kl_divergence_lm(
                     pred=masked_component_logits, target=target_logits
                 ).item()
-                log_data["misc/unmasked_mse_vs_target"] = calc_mean_squared_error(
-                    pred=unmasked_component_logits, target=target_logits
+                log_data["misc/stochastic_kl_loss_vs_target"] = calc_kl_divergence_lm(
+                    pred=stochastic_component_logits, target=target_logits
+                ).item()
+                # clamped_mask
+                clamped_masks = {k: v.clamp(0, 1) for k, v in causal_importances.items()}
+                clamped_masked_component_logits = model.forward_with_components(
+                    batch, components=components, masks=clamped_masks
+                )
+                log_data["misc/clamped_kl_loss_vs_target"] = calc_kl_divergence_lm(
+                    pred=clamped_masked_component_logits, target=target_logits
+                ).item()
+                # binned mask (do bin_num = 10)
+                bin_num = 5
+                # Bin the masks to nearest fraction (e.g., bin_num=10 -> 0.0, 0.1, 0.2, ..., 1.0)
+                binned_masks = {}
+                for k, v in causal_importances.items():
+                    # First clamp to [0, 1] range
+                    clamped = v.clamp(0, 1)
+                    # Round to nearest bin
+                    binned = torch.round(clamped * bin_num) / bin_num
+                    binned_masks[k] = binned
+
+                binned_masked_component_logits = model.forward_with_components(
+                    batch, components=components, masks=binned_masks
+                )
+                log_data["misc/binned_kl_loss_vs_target"] = calc_kl_divergence_lm(
+                    pred=binned_masked_component_logits, target=target_logits
+                ).item()
+
+                log_data["misc/all_components_mse_vs_target"] = calc_mean_squared_error(
+                    pred=all_components_logits, target=target_logits
                 ).item()
                 log_data["misc/masked_mse_vs_target"] = calc_mean_squared_error(
                     pred=masked_component_logits, target=target_logits
+                ).item()
+                log_data["misc/stochastic_mse_vs_target"] = calc_mean_squared_error(
+                    pred=stochastic_component_logits, target=target_logits
+                ).item()
+                log_data["misc/clamped_mse_vs_target"] = calc_mean_squared_error(
+                    pred=clamped_masked_component_logits, target=target_logits
                 ).item()
 
                 if config.log_ce_losses:
@@ -264,8 +308,11 @@ def optimize(
                         batch=batch,
                         components=components,
                         masks=causal_importances,
-                        unmasked_component_logits=unmasked_component_logits,
+                        all_components_logits=all_components_logits,
                         masked_component_logits=masked_component_logits,
+                        clamped_masked_component_logits=clamped_masked_component_logits,
+                        stochastic_component_logits=stochastic_component_logits,
+                        binned_masked_component_logits=binned_masked_component_logits,
                         target_logits=target_logits,
                     )
                     log_data.update(ce_losses)
@@ -277,7 +324,7 @@ def optimize(
                             batch=batch,
                             components=components,
                             masks=causal_importances,
-                            unmasked_component_logits=unmasked_component_logits,
+                            all_components_logits=all_components_logits,
                             masked_component_logits=masked_component_logits,
                             target_logits=target_logits,
                             task=config.task_config.task_name, # type: ignore[call-arg]
@@ -350,7 +397,7 @@ def optimize(
         # --- Backward Pass & Optimize --- #
         # Skip gradient step if we are at the last step (last step just for plotting and logging)
         if step != config.steps:
-            total_loss.backward(retain_graph=True)
+            total_loss.backward()
             if config.faithfulness_scale == "rms" and rms_opt is not None:
                 rms_opt.step()
 

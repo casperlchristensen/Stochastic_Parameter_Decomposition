@@ -117,6 +117,12 @@ def upper_leaky_relu(x: Tensor, alpha: float = 0.01) -> Tensor:
     # TODO: Make more memory efficient
     return torch.where(x > 1, 1 + alpha * (x - 1), F.relu(x))
 
+def upper_leaky_relu_(x: Tensor, alpha: float = 0.01) -> Tensor:
+    # More memory efficient (3x), but does change the original var x
+    x.clamp_(min=0)  # In-place clamp
+    mask = x > 1
+    x[mask] = 1 + alpha * (x[mask] - 1)
+    return x
 
 def calc_causal_importances(
     pre_weight_acts: dict[str, Float[Tensor, "... d_in"] | Int[Tensor, "... pos"]],
@@ -149,8 +155,10 @@ def calc_causal_importances(
             component_act = einops.einsum(acts, As[param_name], "... d_in, d_in C -> ... C")
 
         gate_input = component_act.detach() if detach_inputs else component_act
-        gate_output = gates[param_name](gate_input)
-        causal_importances[param_name] = lower_leaky_relu(gate_output)
-        causal_importances_upper_leaky[param_name] = upper_leaky_relu(gate_output)
+        causal_importances[param_name] = lower_leaky_relu(gates[param_name](gate_input))
+        causal_importances_upper_leaky[param_name] = upper_leaky_relu_(gates[param_name](gate_input))
+        # gate_output = gates[param_name](gate_input)
+        # causal_importances[param_name] = lower_leaky_relu(gate_output)
+        # causal_importances_upper_leaky[param_name] = upper_leaky_relu_(gate_output.clone())
 
     return causal_importances, causal_importances_upper_leaky

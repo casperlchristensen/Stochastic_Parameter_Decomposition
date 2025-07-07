@@ -235,8 +235,11 @@ def calc_ce_losses(
     batch: Int[Tensor, "..."],
     components: dict[str, LinearComponent | EmbeddingComponent],
     masks: dict[str, Float[Tensor, "..."]],
-    unmasked_component_logits: Float[Tensor, "..."],
+    all_components_logits: Float[Tensor, "..."],
     masked_component_logits: Float[Tensor, "..."],
+    clamped_masked_component_logits: Float[Tensor, "..."],
+    stochastic_component_logits: Float[Tensor, "..."],
+    binned_masked_component_logits: Float[Tensor, "..."],
     target_logits: Float[Tensor, "..."],
 ) -> dict[str, float]:
     """Calculate cross-entropy losses for various masking scenarios.
@@ -246,7 +249,7 @@ def calc_ce_losses(
         batch: Input batch
         components: Dictionary of components
         masks: Dictionary of masks for components
-        unmasked_component_logits: Logits from unmasked components
+        all_components_logits: Logits from all components
         masked_component_logits: Logits from masked components
         target_logits: Target model logits
 
@@ -257,17 +260,28 @@ def calc_ce_losses(
 
     # Flatten logits and batch for CE calculation
     flat_all_component_logits = einops.rearrange(
-        unmasked_component_logits, "... vocab -> (...) vocab"
+        all_components_logits, "... vocab -> (...) vocab"
     )
     flat_masked_component_logits = einops.rearrange(
         masked_component_logits, "... vocab -> (...) vocab"
     )
+    flat_stochastic_component_logits = einops.rearrange(
+        stochastic_component_logits, "... vocab -> (...) vocab"
+    )
+    flat_clamped_masked_component_logits = einops.rearrange(
+        clamped_masked_component_logits, "... vocab -> (...) vocab"
+    )
+    flat_binned_masked_component_logits = einops.rearrange(
+        binned_masked_component_logits, "... vocab -> (...) vocab"
+    )
     flat_batch = batch.flatten()
 
     # CE vs true labels
-    unmasked_ce_loss = F.cross_entropy(input=flat_all_component_logits[:-1], target=flat_batch[1:])
+    all_components_ce_loss = F.cross_entropy(input=flat_all_component_logits[:-1], target=flat_batch[1:])
     masked_ce_loss = F.cross_entropy(input=flat_masked_component_logits[:-1], target=flat_batch[1:])
-
+    stochastic_ce_loss = F.cross_entropy(input=flat_stochastic_component_logits[:-1], target=flat_batch[1:])
+    clamped_ce_loss = F.cross_entropy(input=flat_clamped_masked_component_logits[:-1], target=flat_batch[1:])
+    binned_ce_loss = F.cross_entropy(input=flat_binned_masked_component_logits[:-1], target=flat_batch[1:])
     flat_target_logits = einops.rearrange(target_logits, "... vocab -> (...) vocab")
     target_ce_loss = F.cross_entropy(input=flat_target_logits[:-1], target=flat_batch[1:])
 
@@ -283,10 +297,12 @@ def calc_ce_losses(
         input=flat_zero_masked_component_logits[:-1], target=flat_batch[1:]
     )
 
-    ce_losses["misc/unmasked_ce_loss_vs_labels"] = unmasked_ce_loss.item()
-    ce_losses["misc/masked_ce_loss_vs_labels"] = masked_ce_loss.item()
-    ce_losses["misc/target_ce_loss_vs_labels"] = target_ce_loss.item()
-    ce_losses["misc/zero_masked_ce_loss_vs_labels"] = zero_masked_ce_loss.item()
+    ce_losses["ce/all_components_ce_diff"] = all_components_ce_loss.item() - target_ce_loss.item()
+    ce_losses["ce/masked_ce_diff"] = masked_ce_loss.item() - target_ce_loss.item()
+    ce_losses["ce/stochastic_ce_diff"] = stochastic_ce_loss.item() - target_ce_loss.item()
+    ce_losses["ce/clamped_ce_diff"] = clamped_ce_loss.item() - target_ce_loss.item()
+    ce_losses["ce/binned_ce_diff"] = binned_ce_loss.item() - target_ce_loss.item()
+    ce_losses["ce/zero_masked_ce_diff"] = zero_masked_ce_loss.item() - target_ce_loss.item()
 
     return ce_losses
 
@@ -295,7 +311,7 @@ def calc_accuracies(
     batch: Int[Tensor, "..."],
     components: dict[str, LinearComponent | EmbeddingComponent],
     masks: dict[str, Float[Tensor, "..."]],
-    unmasked_component_logits: Float[Tensor, "..."],
+    all_components_logits: Float[Tensor, "..."],
     masked_component_logits: Float[Tensor, "..."],
     target_logits: Float[Tensor, "..."],
     task: Literal["lm", "cv"] = "lm",
@@ -307,7 +323,7 @@ def calc_accuracies(
         batch: Input batch
         components: Dictionary of components
         masks: Dictionary of masks for components
-        unmasked_component_logits: Logits from unmasked components
+        all_components_logits: Logits from all components
         masked_component_logits: Logits from masked components
         target_logits: Target model logits
 
@@ -319,7 +335,7 @@ def calc_accuracies(
     if task == "lm":
         # Flatten logits and batch for accuracy calculation
         flat_all_component_logits = einops.rearrange(
-            unmasked_component_logits, "... vocab -> (...) vocab"
+            all_components_logits, "... vocab -> (...) vocab"
         )
         flat_masked_component_logits = einops.rearrange(
             masked_component_logits, "... vocab -> (...) vocab"
@@ -327,7 +343,7 @@ def calc_accuracies(
         flat_batch = batch.flatten()
 
         # Accuracy vs true labels
-        unmasked_accuracy = (flat_all_component_logits[:-1].argmax(dim=-1) == flat_batch[1:]).float().mean()
+        all_components_accuracy = (flat_all_component_logits[:-1].argmax(dim=-1) == flat_batch[1:]).float().mean()
         masked_accuracy = (flat_masked_component_logits[:-1].argmax(dim=-1) == flat_batch[1:]).float().mean()
         target_accuracy = (target_logits[:-1].argmax(dim=-1) == flat_batch[1:]).float().mean()
 
@@ -341,18 +357,18 @@ def calc_accuracies(
         )
         zero_masked_accuracy = (flat_zero_masked_component_logits[:-1].argmax(dim=-1) == flat_batch[1:]).float().mean()
 
-        accuracies["misc/unmasked_accuracy_vs_labels"] = unmasked_accuracy.item()
+        accuracies["misc/all_components_accuracy_vs_labels"] = all_components_accuracy.item()
         accuracies["misc/masked_accuracy_vs_labels"] = masked_accuracy.item()
         accuracies["misc/target_accuracy_vs_labels"] = target_accuracy.item()
         accuracies["misc/zero_masked_accuracy_vs_labels"] = zero_masked_accuracy.item()
     elif task == "cv":
         # For classification tasks, we assume the logits are already in the correct format
         # and we can directly calculate accuracies.
-        unmasked_accuracy = (unmasked_component_logits.argmax(dim=-1) == batch).float().mean()
+        all_components_accuracy = (all_components_logits.argmax(dim=-1) == batch).float().mean()
         masked_accuracy = (masked_component_logits.argmax(dim=-1) == batch).float().mean()
         target_accuracy = (target_logits.argmax(dim=-1) == batch).float().mean()
 
-        accuracies["misc/unmasked_accuracy_vs_labels"] = unmasked_accuracy.item()
+        accuracies["misc/all_components_accuracy_vs_labels"] = all_components_accuracy.item()
         accuracies["misc/masked_accuracy_vs_labels"] = masked_accuracy.item()
         accuracies["misc/target_accuracy_vs_labels"] = target_accuracy.item()
 
@@ -380,6 +396,7 @@ def calculate_losses(
         components: Dictionary of component modules
         causal_importances: Causal importance masks
         causal_importances_upper_leaky: Upper leaky causal importances for regularization
+        binned_causal_importances: Binned causal importances for regularization
         target_out: Target model output
         device: Device to run computations on
         n_params: Total number of parameters in the model
@@ -412,6 +429,21 @@ def calculate_losses(
         total_loss += config.recon_coeff * recon_loss
         loss_terms["loss/recon"] = recon_loss.item()
 
+    # Clamped reconstruction loss
+    if config.clamped_recon_coeff is not None:
+        clamped_masks = {k: torch.clamp(v, min=0, max=1) for k, v in causal_importances.items()}
+        clamped_recon_loss = calc_masked_recon_loss(
+            model=model,
+            batch=batch,
+            components=components,
+            masks=clamped_masks,
+            target_out=target_out,  
+            loss_type=config.output_loss_type,
+        )
+        total_loss += config.clamped_recon_coeff * clamped_recon_loss
+        loss_terms["loss/clamped_recon"] = clamped_recon_loss.item()
+
+    
     # Stochastic reconstruction loss
     if config.stochastic_recon_coeff is not None:
         stochastic_masks = calc_stochastic_masks(
@@ -481,7 +513,7 @@ def calculate_losses(
         loss_terms["loss/schatten"] = schatten_loss.item()
 
     # Output reconstruction loss
-    if config.out_recon_coeff is not None:
+    if config.all_components_recon_coeff is not None:
         masks_all_ones = {k: torch.ones_like(v) for k, v in causal_importances.items()}
         out_recon_loss = calc_masked_recon_loss(
             model=model,
@@ -491,8 +523,8 @@ def calculate_losses(
             target_out=target_out,
             loss_type=config.output_loss_type,
         )
-        total_loss += config.out_recon_coeff * out_recon_loss
-        loss_terms["loss/output_recon"] = out_recon_loss.item()
+        total_loss += config.all_components_recon_coeff * out_recon_loss
+        loss_terms["loss/all_components_recon"] = out_recon_loss.item()
 
     # Embedding reconstruction loss
     if config.embedding_recon_coeff is not None:
