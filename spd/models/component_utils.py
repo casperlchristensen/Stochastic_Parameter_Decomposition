@@ -8,7 +8,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 
 from spd.models.component_model import ComponentModel
-from spd.models.components import EmbeddingComponent, Gate, GateMLP, LinearComponent
+from spd.models.components import EmbeddingComponent, Gate, GateMLP, GateGraph, LinearComponent
 from spd.utils import extract_batch_data
 
 
@@ -55,10 +55,12 @@ def component_activation_statistics(
     input_key: str = "input_ids",
 ) -> tuple[dict[str, float], dict[str, Float[Tensor, " C"]]]:
     """Get the number and strength of the masks over the full dataset."""
+    use_graph_gates = isinstance(model.gates, GateGraph)
+
     # We used "-" instead of "." as module names can't have "." in them
-    gates: dict[str, Gate | GateMLP] = {
+    gates: dict[str, Gate | GateMLP | GateGraph] = {
         k.removeprefix("gates.").replace("-", "."): v for k, v in model.gates.items()
-    }  # type: ignore
+    } if not use_graph_gates else model.gates # type: ignore
     components: dict[str, LinearComponent | EmbeddingComponent] = {
         k.removeprefix("components.").replace("-", "."): v for k, v in model.components.items()
     }  # type: ignore
@@ -123,7 +125,7 @@ def upper_leaky_relu(x: Tensor, alpha: float = 0.01) -> Tensor:
 def calc_causal_importances(
     pre_weight_acts: dict[str, Float[Tensor, "... d_in"] | Int[Tensor, "... pos"]],
     As: Mapping[str, Float[Tensor, "d_in C"]],
-    gates: Mapping[str, Gate | GateMLP],
+    gates: Mapping[str, Gate | GateMLP | GateGraph],
     detach_inputs: bool = False,
 ) -> tuple[dict[str, Float[Tensor, "... C"]], dict[str, Float[Tensor, "... C"]]]:
     """Calculate component activations and causal importances in one pass to save memory.
@@ -140,19 +142,40 @@ def calc_causal_importances(
     causal_importances = {}
     causal_importances_upper_leaky = {}
 
-    for param_name in pre_weight_acts:
-        acts = pre_weight_acts[param_name]
+    if "graph_gate" in gates:
+        # If we have a graph gate, we need to handle it differently
+        acts = {}
+        for param_name in pre_weight_acts:
+            acts[param_name] = pre_weight_acts[param_name]
+            if not acts[param_name].dtype.is_floating_point:
+                # Embedding layer
+                acts[param_name] = As[param_name][acts[param_name]]
+            else:
+                # Linear layer
+                acts[param_name] = einops.einsum(acts[param_name], As[param_name], "... d_in, d_in C -> ... C")
+        causal_importances_raw = gates["graph_gate"].forward(acts) # type: ignore
+        causal_importances = {
+            param_name: lower_leaky_relu(causal_importances_raw[param_name]) # type: ignore
+            for param_name in pre_weight_acts
+        }
+        causal_importances_upper_leaky = {
+            param_name: upper_leaky_relu(causal_importances_raw[param_name]) # type: ignore
+            for param_name in pre_weight_acts
+        }
+    else:
+        for param_name in pre_weight_acts:
+            acts = pre_weight_acts[param_name]
 
-        if not acts.dtype.is_floating_point:
-            # Embedding layer
-            component_act = As[param_name][acts]
-        else:
-            # Linear layer
-            component_act = einops.einsum(acts, As[param_name], "... d_in, d_in C -> ... C")
+            if not acts.dtype.is_floating_point:
+                # Embedding layer
+                component_act = As[param_name][acts]
+            else:
+                # Linear layer
+                component_act = einops.einsum(acts, As[param_name], "... d_in, d_in C -> ... C")
 
-        gate_input = component_act.detach() if detach_inputs else component_act
-        gate_output = gates[param_name](gate_input)
-        causal_importances[param_name] = lower_leaky_relu(gate_output)
-        causal_importances_upper_leaky[param_name] = upper_leaky_relu(gate_output)
+            gate_input = component_act.detach() if detach_inputs else component_act
+            gate_output = gates[param_name](gate_input)
+            causal_importances[param_name] = lower_leaky_relu(gate_output)
+            causal_importances_upper_leaky[param_name] = upper_leaky_relu(gate_output)
 
     return causal_importances, causal_importances_upper_leaky

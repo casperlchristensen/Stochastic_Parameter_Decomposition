@@ -50,7 +50,7 @@ def optim_scale_fn(
     target_weights: Float[Tensor, ""],
     optimizer: torch.optim.Optimizer,
     key: str = "square_avg",
-    normalize: bool = False,
+    normalize: bool = True,
 ):
     square_avg = optimizer.state[target_weights][key]
     if normalize:
@@ -76,6 +76,7 @@ def get_common_run_name_suffix(config: Config) -> str:
     run_suffix += f"sd{config.seed}_"
     run_suffix += f"lr{config.lr:.2e}_"
     run_suffix += f"bs{config.batch_size}_"
+    run_suffix += f"{config.faithfulness_scale or ""}importance_"
     return run_suffix
 
 
@@ -98,7 +99,7 @@ def optimize(
         base_model=target_model,
         target_module_patterns=config.target_module_patterns,
         C=config.C,
-        n_ci_mlp_neurons=config.n_ci_mlp_neurons,
+        gate_config=config.gate_config,
         pretrained_model_output_attr=config.pretrained_model_output_attr,
     )
 
@@ -147,9 +148,10 @@ def optimize(
 
     component_params: list[torch.nn.Parameter] = []
     gate_params: list[torch.nn.Parameter] = []
-    for name, component in components.items():
+    for _, component in components.items():
         component_params.extend(list(component.parameters()))
-        gate_params.extend(list(gates[name].parameters()))
+    for _, gate in gates.items():
+        gate_params.extend(gate.parameters())
 
     assert len(component_params) > 0, "No parameters found in components to optimize"
 
@@ -218,7 +220,7 @@ def optimize(
             target_out=target_out,
             device=device,
             n_params=n_params,
-            faithfulness_scale_fn=faithfulness_scale_fn if config.lr_warmup_pct * config.steps > step and step > 1  else faithfulness_no_scale_fn,
+            faithfulness_scale_fn=faithfulness_scale_fn if step > config.lr_warmup_pct * config.steps and step > 1  else faithfulness_no_scale_fn,
         )
 
         log_data["loss/total"] = total_loss.item()
@@ -360,9 +362,14 @@ def optimize(
             if config.faithfulness_scale == "rms" and rms_opt is not None:
                 rms_opt.step()
 
+            target_param_ids = {id(p) for p in target_model.parameters()}
+
             if step % config.print_freq == 0 and config.wandb_project:
                 grad_norm: Float[Tensor, ""] = torch.zeros((), device=device)
                 for param in model.parameters():
+                    # Do not count the gradients of the target model
+                    if id(param) in target_param_ids:
+                        continue
                     if param.grad is not None:
                         grad_norm += param.grad.data.flatten().pow(2).sum()  # type: ignore
                 grad_norm_val = grad_norm.sqrt().item()

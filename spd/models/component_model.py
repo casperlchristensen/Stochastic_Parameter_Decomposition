@@ -13,8 +13,8 @@ from jaxtyping import Float
 from torch import Tensor, nn
 from wandb.apis.public import Run
 
-from spd.configs import Config
-from spd.models.components import EmbeddingComponent, Gate, GateMLP, LinearComponent
+from spd.configs import Config, GraphGateConfig, GateMLPConfig
+from spd.models.components import EmbeddingComponent, Gate, GateGraph, GateGraphFast, GateMLP, LinearComponent
 from spd.spd_types import WANDB_PATH_PREFIX, ModelPath
 from spd.utils import load_pretrained
 from spd.wandb_utils import download_wandb_file, fetch_latest_wandb_checkpoint, fetch_wandb_run_dir
@@ -33,8 +33,8 @@ class ComponentModel(nn.Module):
         base_model: nn.Module,
         target_module_patterns: list[str],
         C: int,
-        n_ci_mlp_neurons: int,
         pretrained_model_output_attr: str | None,
+        gate_config: GraphGateConfig | GateMLPConfig,
     ):
         super().__init__()
         self.model = base_model
@@ -44,12 +44,38 @@ class ComponentModel(nn.Module):
             target_module_patterns=target_module_patterns, C=C
         )
 
-        gate_class = GateMLP if n_ci_mlp_neurons > 0 else Gate
-        gate_kwargs = {"C": C}
-        if n_ci_mlp_neurons > 0:
-            gate_kwargs["n_ci_mlp_neurons"] = n_ci_mlp_neurons
+        if gate_config.gate_type == "graph":
+            if gate_config.use_fast_graph:
+                self.gates = nn.ModuleDict(
+                    {
+                        "graph_gate":
+                        GateGraphFast(
+                            C=C,
+                            components=self.components,
+                            d_subcomponent=16,  # Default dimension for subcomponents
+                            d_summary=16,  # Default dimension for summary
+                        )
+                    }
+                )
+            else:
+                self.gates = nn.ModuleDict(
+                    {
+                        "graph_gate":
+                        GateGraph(
+                            C=C,
+                            components=self.components,
+                            d_subcomponent=gate_config.d_subcomponent,
+                            d_summary=gate_config.d_summary,
+                        )
+                    }
+                )
+        elif gate_config.gate_type == "mlp":
+            gate_class = GateMLP if gate_config.n_ci_mlp_neurons > 0 else Gate
+            gate_kwargs = {"C": C}
+            if gate_config.n_ci_mlp_neurons  > 0:
+                gate_kwargs["n_ci_mlp_neurons"] = gate_config.n_ci_mlp_neurons 
 
-        self.gates = nn.ModuleDict({name: gate_class(**gate_kwargs) for name in self.components})
+            self.gates = nn.ModuleDict({name: gate_class(**gate_kwargs) for name in self.components})
 
     def create_target_components(self, target_module_patterns: list[str], C: int) -> nn.ModuleDict:
         """Create target components for the model."""
@@ -118,6 +144,7 @@ class ComponentModel(nn.Module):
         self,
         components: Mapping[str, LinearComponent | EmbeddingComponent],
         masks: dict[str, Float[Tensor, "... C"]] | None = None,
+        mask_lower_bound: float | None = 0.0,
     ):
         """Context manager for temporarily replacing modules with components.
 
@@ -137,6 +164,8 @@ class ComponentModel(nn.Module):
             # Set mask if provided
             if masks is not None:
                 component.mask = masks[module_name]
+                if mask_lower_bound is not None:
+                    component.mask = torch.clamp(component.mask, min=mask_lower_bound)
 
             # Replace module
             self.model.set_submodule(module_name, component)
@@ -157,6 +186,7 @@ class ComponentModel(nn.Module):
         *args: Any,
         components: dict[str, LinearComponent | EmbeddingComponent],
         masks: dict[str, Float[Tensor, "... C"]] | None = None,
+        mask_lower_bound: float | None = 0.0,
         **kwargs: Any,
     ) -> Any:
         """Forward pass with temporary component replacements.
@@ -165,7 +195,7 @@ class ComponentModel(nn.Module):
             components: Dictionary mapping component names to components
             masks: Optional dictionary mapping component names to masks
         """
-        with self._replaced_modules(components, masks):
+        with self._replaced_modules(components, masks, mask_lower_bound):
             return self(*args, **kwargs)
 
     def forward_with_pre_forward_cache_hooks(
