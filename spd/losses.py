@@ -174,7 +174,7 @@ def calc_masked_recon_loss(
 def _calc_tensors_mse(
     params1: dict[str, Float[Tensor, "d_in d_out"]],
     params2: dict[str, Float[Tensor, "d_in d_out"]],
-    scalers: dict[str, Float[Tensor, ""]],
+    scalers: dict[str, Float[Tensor, "1"] | Float[Tensor, "d_in d_out"]],
     n_params: int,
     device: str,
 ) -> Tuple[Float[Tensor, ""], Float[Tensor, ""]]:
