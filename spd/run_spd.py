@@ -52,7 +52,7 @@ def optim_scale_fn(
     optimizer: torch.optim.Optimizer,
     key: str = "square_avg",
     normalize: bool = False,
-): 
+):
     square_avg = optimizer.state[target_weights][key]
     if normalize:
         square_avg = square_avg / (square_avg.mean() + 1e-8)
@@ -107,6 +107,7 @@ def optimize(
         param.requires_grad = False
     logger.info("Target model parameters frozen.")
 
+    faithfulness_no_scale_fn = lambda x : torch.tensor(1.0, device=x.device if hasattr(x, "device") else "cpu")
     if config.faithfulness_scale == "rms":
         non_bias_params = [
             p for name, p in model.named_parameters() if "bias" not in name
@@ -125,7 +126,7 @@ def optimize(
         )
     else:
         rms_opt = None
-        faithfulness_scale_fn = lambda x: torch.tensor(1.0, device=x.device if hasattr(x, "device") else "cpu")
+        faithfulness_scale_fn = faithfulness_no_scale_fn
 
     # We used "-" instead of "." as module names can't have "." in them
     gates: dict[str, Gate | GateMLP] = {
@@ -186,13 +187,15 @@ def optimize(
 
         try:
             batch_item = next(data_iter)
-            batch = extract_batch_data(batch_item, input_key=input_key)
+            batch, labels = extract_batch_data(batch_item, input_key=input_key)
         except StopIteration:
             logger.warning("Dataloader exhausted, resetting iterator.")
             data_iter = iter(train_loader)
             batch_item = next(data_iter)
-            batch = extract_batch_data(batch_item, input_key=input_key)
+            batch, labels = extract_batch_data(batch_item, input_key=input_key)
         batch = batch.to(device)
+        if labels is not None:
+            labels = labels.to(device)
 
         target_out, pre_weight_acts = model.forward_with_pre_forward_cache_hooks(
             batch, module_names=list(components.keys())
@@ -216,7 +219,7 @@ def optimize(
             target_out=target_out,
             device=device,
             n_params=n_params,
-            faithfulness_scale_fn=faithfulness_scale_fn,
+            faithfulness_scale_fn=faithfulness_scale_fn if config.lr_warmup_pct * config.steps > step and step > 1  else faithfulness_no_scale_fn,
         )
 
         log_data["loss/total"] = total_loss.item()
@@ -314,6 +317,8 @@ def optimize(
                         stochastic_component_logits=stochastic_component_logits,
                         binned_masked_component_logits=binned_masked_component_logits,
                         target_logits=target_logits,
+                        task=config.task_config.task_name,  # type: ignore[call-arg]
+                        labels=labels,
                     )
                     log_data.update(ce_losses)
 
@@ -328,6 +333,7 @@ def optimize(
                             masked_component_logits=masked_component_logits,
                             target_logits=target_logits,
                             task=config.task_config.task_name, # type: ignore[call-arg]
+                            labels=labels,
                         )
                         log_data.update(acc)
 
@@ -362,7 +368,7 @@ def optimize(
                 fig_dict.update(ci_histogram_figs)
 
                 mean_component_activation_counts = component_activation_statistics(
-                    model=model, dataloader=eval_loader, n_steps=n_eval_steps, device=device
+                    model=model, dataloader=eval_loader, n_steps=n_eval_steps, device=device, input_key=input_key
                 )[1]
                 assert mean_component_activation_counts is not None
                 fig_dict["mean_component_activation_counts"] = (

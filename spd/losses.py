@@ -193,8 +193,8 @@ def _calc_tensors_mse(
     scaled_faithfulness_loss = torch.tensor(0.0, device=device)
     for name in params1:
         diff = params2[name] - params1[name]
-        faithfulness_loss += ((diff ** 2).sum() * scalers[name])
-        scaled_faithfulness_loss += (scalers[name] * ((params2[name] - params1[name]) ** 2)).sum()
+        faithfulness_loss += (diff ** 2).sum()
+        scaled_faithfulness_loss += ((scalers[name] * diff) ** 2).sum()
     return faithfulness_loss / n_params, scaled_faithfulness_loss / n_params
 
 
@@ -241,6 +241,8 @@ def calc_ce_losses(
     stochastic_component_logits: Float[Tensor, "..."],
     binned_masked_component_logits: Float[Tensor, "..."],
     target_logits: Float[Tensor, "..."],
+    task: Literal["lm", "cv"] = "lm",
+    labels: Int[Tensor, "..."] | None = None,
 ) -> dict[str, float]:
     """Calculate cross-entropy losses for various masking scenarios.
 
@@ -259,43 +261,52 @@ def calc_ce_losses(
     ce_losses = {}
 
     # Flatten logits and batch for CE calculation
-    flat_all_component_logits = einops.rearrange(
-        all_components_logits, "... vocab -> (...) vocab"
-    )
-    flat_masked_component_logits = einops.rearrange(
-        masked_component_logits, "... vocab -> (...) vocab"
-    )
-    flat_stochastic_component_logits = einops.rearrange(
-        stochastic_component_logits, "... vocab -> (...) vocab"
-    )
-    flat_clamped_masked_component_logits = einops.rearrange(
-        clamped_masked_component_logits, "... vocab -> (...) vocab"
-    )
-    flat_binned_masked_component_logits = einops.rearrange(
-        binned_masked_component_logits, "... vocab -> (...) vocab"
-    )
-    flat_batch = batch.flatten()
-
-    # CE vs true labels
-    all_components_ce_loss = F.cross_entropy(input=flat_all_component_logits[:-1], target=flat_batch[1:])
-    masked_ce_loss = F.cross_entropy(input=flat_masked_component_logits[:-1], target=flat_batch[1:])
-    stochastic_ce_loss = F.cross_entropy(input=flat_stochastic_component_logits[:-1], target=flat_batch[1:])
-    clamped_ce_loss = F.cross_entropy(input=flat_clamped_masked_component_logits[:-1], target=flat_batch[1:])
-    binned_ce_loss = F.cross_entropy(input=flat_binned_masked_component_logits[:-1], target=flat_batch[1:])
-    flat_target_logits = einops.rearrange(target_logits, "... vocab -> (...) vocab")
-    target_ce_loss = F.cross_entropy(input=flat_target_logits[:-1], target=flat_batch[1:])
-
-    # CE when every component is fully masked (all-zero masks)
-    zero_masks = {k: torch.zeros_like(v) for k, v in masks.items()}
-    zero_masked_component_logits = model.forward_with_components(
-        batch, components=components, masks=zero_masks
-    )
-    flat_zero_masked_component_logits = einops.rearrange(
-        zero_masked_component_logits, "... vocab -> (...) vocab"
-    )
-    zero_masked_ce_loss = F.cross_entropy(
-        input=flat_zero_masked_component_logits[:-1], target=flat_batch[1:]
-    )
+    if task == "lm":
+        flat_batch = batch.flatten()
+        flat_all_component_logits = einops.rearrange(
+            all_components_logits[:, 1:], "... vocab -> (...) vocab"
+        )
+        flat_masked_component_logits = einops.rearrange(
+            masked_component_logits[:, 1:], "... vocab -> (...) vocab"
+        )
+        flat_stochastic_component_logits = einops.rearrange(
+            stochastic_component_logits[:, 1:], "... vocab -> (...) vocab"
+        )
+        flat_clamped_masked_component_logits = einops.rearrange(
+            clamped_masked_component_logits[:, 1:], "... vocab -> (...) vocab"
+        )
+        flat_binned_masked_component_logits = einops.rearrange(
+            binned_masked_component_logits[:, 1:], "... vocab -> (...) vocab"
+        )
+        # CE when every component is fully masked (all-zero masks)
+        zero_masks = {k: torch.zeros_like(v) for k, v in masks.items()}
+        zero_masked_component_logits = model.forward_with_components(
+            batch, components=components, masks=zero_masks
+        )
+        flat_zero_masked_component_logits = einops.rearrange(
+            zero_masked_component_logits[:, 1:], "... vocab -> (...) vocab"
+        )
+        flat_target_logits = einops.rearrange(target_logits, "... vocab -> (...) vocab")
+        all_components_ce_loss = F.cross_entropy(input=flat_all_component_logits, target=flat_batch[1:])
+        masked_ce_loss = F.cross_entropy(input=flat_masked_component_logits, target=flat_batch[1:])
+        stochastic_ce_loss = F.cross_entropy(input=flat_stochastic_component_logits, target=flat_batch[1:])
+        clamped_ce_loss = F.cross_entropy(input=flat_clamped_masked_component_logits, target=flat_batch[1:])
+        binned_ce_loss = F.cross_entropy(input=flat_binned_masked_component_logits, target=flat_batch[1:])
+        zero_masked_ce_loss = F.cross_entropy(
+            input=flat_zero_masked_component_logits[:-1], target=flat_batch[1:]
+        )
+        target_ce_loss = F.cross_entropy(input=flat_target_logits, target=flat_batch[1:])
+    elif task == "cv":
+        assert labels is not None, "Labels must be provided for classification tasks"
+        # For classification tasks, we assume the logits are already in the correct format
+        # and we can directly calculate CE losses.
+        all_components_ce_loss = F.cross_entropy(input=all_components_logits, target=labels)
+        masked_ce_loss = F.cross_entropy(input=masked_component_logits, target=labels)
+        stochastic_ce_loss = F.cross_entropy(input=stochastic_component_logits, target=labels)
+        clamped_ce_loss = F.cross_entropy(input=clamped_masked_component_logits, target=labels)
+        binned_ce_loss = F.cross_entropy(input=binned_masked_component_logits, target=labels)
+        zero_masked_ce_loss = F.cross_entropy(input=zero_masked_component_logits, target=labels)
+        target_ce_loss = F.cross_entropy(input=target_logits, target=labels)
 
     ce_losses["ce/all_components_ce_diff"] = all_components_ce_loss.item() - target_ce_loss.item()
     ce_losses["ce/masked_ce_diff"] = masked_ce_loss.item() - target_ce_loss.item()
@@ -315,6 +326,7 @@ def calc_accuracies(
     masked_component_logits: Float[Tensor, "..."],
     target_logits: Float[Tensor, "..."],
     task: Literal["lm", "cv"] = "lm",
+    labels: Int[Tensor, "..."] | None = None,
 ) -> dict[str, float]:
     """Calculate accuracies for various masking scenarios.
 
@@ -332,6 +344,12 @@ def calc_accuracies(
     """
     accuracies = {}
 
+    # Accuracy when every component is fully masked (all-zero masks)
+    zero_masks = {k: torch.zeros_like(v) for k, v in masks.items()}
+    zero_masked_component_logits = model.forward_with_components(
+        batch, components=components, masks=zero_masks
+    )
+
     if task == "lm":
         # Flatten logits and batch for accuracy calculation
         flat_all_component_logits = einops.rearrange(
@@ -347,11 +365,6 @@ def calc_accuracies(
         masked_accuracy = (flat_masked_component_logits[:-1].argmax(dim=-1) == flat_batch[1:]).float().mean()
         target_accuracy = (target_logits[:-1].argmax(dim=-1) == flat_batch[1:]).float().mean()
 
-        # Accuracy when every component is fully masked (all-zero masks)
-        zero_masks = {k: torch.zeros_like(v) for k, v in masks.items()}
-        zero_masked_component_logits = model.forward_with_components(
-            batch, components=components, masks=zero_masks
-        )
         flat_zero_masked_component_logits = einops.rearrange(
             zero_masked_component_logits, "... vocab -> (...) vocab"
         )
@@ -364,13 +377,15 @@ def calc_accuracies(
     elif task == "cv":
         # For classification tasks, we assume the logits are already in the correct format
         # and we can directly calculate accuracies.
-        all_components_accuracy = (all_components_logits.argmax(dim=-1) == batch).float().mean()
-        masked_accuracy = (masked_component_logits.argmax(dim=-1) == batch).float().mean()
-        target_accuracy = (target_logits.argmax(dim=-1) == batch).float().mean()
+        unmasked_accuracy = (unmasked_component_logits.argmax(dim=-1) == labels).float().mean()
+        masked_accuracy = (masked_component_logits.argmax(dim=-1) == labels).float().mean()
+        target_accuracy = (target_logits.argmax(dim=-1) == labels).float().mean()
+        zero_masked_accuracy = (zero_masked_component_logits.argmax(dim=-1) == labels).float().mean()
 
         accuracies["misc/all_components_accuracy_vs_labels"] = all_components_accuracy.item()
         accuracies["misc/masked_accuracy_vs_labels"] = masked_accuracy.item()
         accuracies["misc/target_accuracy_vs_labels"] = target_accuracy.item()
+        accuracies["misc/zero_masked_accuracy_vs_labels"] = zero_masked_accuracy.item()
 
     return accuracies
 
