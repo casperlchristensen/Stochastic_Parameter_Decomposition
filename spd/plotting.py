@@ -392,7 +392,10 @@ def plot_mean_component_activation_counts(
     # Iterate through modules and plot each histogram on its corresponding axis
     for i, (module_name, counts) in enumerate(mean_component_activation_counts.items()):
         ax = axs[i]
-        ax.hist(counts.detach().cpu().numpy(), bins=100)
+        try:
+            ax.hist(counts.detach().cpu().numpy(), bins=100)
+        except ValueError:
+            ax.hist(counts.detach().cpu().numpy(), bins=10)  # Fallback for small counts
         ax.set_yscale("log")
         ax.set_title(module_name)  # Add module name as title to each subplot
         ax.set_xlabel("Mean Activation Count")
