@@ -52,6 +52,7 @@ print_freq: 100
 save_freq: null
 log_ce_losses: true
 log_accuracies: true
+noise_log_std: 0.2 #baseline / 0-point
 
 # --- Pretrained model info ---
 pretrained_model_class: transformers.ViTForImageClassification

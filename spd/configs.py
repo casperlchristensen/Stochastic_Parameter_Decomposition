@@ -165,13 +165,34 @@ class Config(BaseModel):
     )
 
     # --- Loss Coefficients
+    # Weight faithfulness
     faithfulness_coeff: NonNegativeFloat | None = Field(
         default=1.0,
         description="Coefficient for matching parameters between components and target weights",
     )
+
+    # Minimality
+    pnorm: PositiveFloat = Field(
+        ...,
+        description="The p-value used for the importance minimality loss",
+    )
+    importance_minimality_coeff: NonNegativeFloat = Field(
+        ...,
+        description="Coefficient for importance minimality loss",
+    )
+    schatten_coeff: NonNegativeFloat | None = Field(
+        default=None,
+        description="Coefficient for Schatten-norm regularisation (LM only)",
+    )
+
+    # Reconstruction
     recon_coeff: NonNegativeFloat | None = Field(
         default=None,
         description="Coefficient for recon loss with a causal importance mask",
+    )
+    clamped_recon_coeff: NonNegativeFloat | None = Field(
+        default=None,
+        description="Coefficient for recon loss with a clamped causal importance mask",
     )
     stochastic_recon_coeff: NonNegativeFloat | None = Field(
         default=None,
@@ -185,15 +206,7 @@ class Config(BaseModel):
         default=None,
         description="Coefficient for per-layer recon loss with stochastically sampled masks",
     )
-    importance_minimality_coeff: NonNegativeFloat = Field(
-        ...,
-        description="Coefficient for importance minimality loss",
-    )
-    schatten_coeff: NonNegativeFloat | None = Field(
-        default=None,
-        description="Coefficient for Schatten-norm regularisation (LM only)",
-    )
-    out_recon_coeff: NonNegativeFloat | None = Field(
+    all_components_recon_coeff: NonNegativeFloat | None = Field(
         default=None,
         description="Coefficient for output recon loss",
     )
@@ -204,10 +217,6 @@ class Config(BaseModel):
     is_embed_unembed_recon: bool = Field(
         default=False,
         description="If True, apply embedding recon jointly to embed & unembed matrices",
-    )
-    pnorm: PositiveFloat = Field(
-        ...,
-        description="The p-value used for the importance minimality loss",
     )
     output_loss_type: Literal["mse", "kl"] = Field(
         ...,
@@ -266,6 +275,10 @@ class Config(BaseModel):
     log_accuracies: bool = Field(
         default=False,
         description="If True, additionally track accuracies during training",
+    )
+    noise_log_std: float = Field(
+        default=0.2,
+        description="Standard deviation of the noise added to the causal importance masks",
     )
 
     # --- Pretrained model info ---

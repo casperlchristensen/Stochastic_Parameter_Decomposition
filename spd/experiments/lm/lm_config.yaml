@@ -11,11 +11,8 @@ wandb_run_name_prefix: ""
 seed: 0
 C: 300
 n_mask_samples: 1
+n_ci_mlp_neurons: 16
 target_module_patterns: ["transformer.h.3.mlp.c_fc"]
-
-gate_config:
-  gate_type: "mlp"  # "graph", "mlp"
-  n_ci_mlp_neurons: 16
 
 # --- Loss Coefficients ---
 # Weight faithfulness
@@ -45,7 +42,7 @@ output_loss_type: kl
 
 # --- Training ---
 # batch_size: 4
-batch_size: 1
+batch_size: 2
 steps: 50_000
 lr: 1e-4
 lr_schedule: constant
@@ -56,9 +53,11 @@ n_eval_steps: 100
 # --- Logging & Saving ---
 image_freq: 2000
 image_on_first_step: true
-print_freq: 100
+print_freq: 1000
 save_freq: null
 log_ce_losses: true
+noise_log_std: 0.2
+
 
 # --- Pretrained model info ---
 pretrained_model_class: transformers.AutoModelForCausalLM
