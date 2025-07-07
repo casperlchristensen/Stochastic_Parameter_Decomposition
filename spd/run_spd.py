@@ -77,6 +77,7 @@ def get_common_run_name_suffix(config: Config) -> str:
     run_suffix += f"lr{config.lr:.2e}_"
     run_suffix += f"bs{config.batch_size}_"
     run_suffix += f"{config.faithfulness_scale or ""}importance_"
+    run_suffix += f"{config.gate_config.gate_type}_"
     return run_suffix
 
 
