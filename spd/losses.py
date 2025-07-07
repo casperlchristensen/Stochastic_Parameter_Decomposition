@@ -262,40 +262,32 @@ def calc_ce_losses(
 
     # Flatten logits and batch for CE calculation
     if task == "lm":
-        flat_batch = batch.flatten()
-        flat_all_component_logits = einops.rearrange(
-            all_components_logits[:, 1:], "... vocab -> (...) vocab"
-        )
-        flat_masked_component_logits = einops.rearrange(
-            masked_component_logits[:, 1:], "... vocab -> (...) vocab"
-        )
-        flat_stochastic_component_logits = einops.rearrange(
-            stochastic_component_logits[:, 1:], "... vocab -> (...) vocab"
-        )
-        flat_clamped_masked_component_logits = einops.rearrange(
-            clamped_masked_component_logits[:, 1:], "... vocab -> (...) vocab"
-        )
-        flat_binned_masked_component_logits = einops.rearrange(
-            binned_masked_component_logits[:, 1:], "... vocab -> (...) vocab"
-        )
+        # Remove the first token from the batch (since it's not predicted)
+        flat_batch = batch[:, 1:].flatten()
+
         # CE when every component is fully masked (all-zero masks)
         zero_masks = {k: torch.zeros_like(v) for k, v in masks.items()}
         zero_masked_component_logits = model.forward_with_components(
             batch, components=components, masks=zero_masks
         )
-        flat_zero_masked_component_logits = einops.rearrange(
-            zero_masked_component_logits[:, 1:], "... vocab -> (...) vocab"
-        )
-        flat_target_logits = einops.rearrange(target_logits, "... vocab -> (...) vocab")
-        all_components_ce_loss = F.cross_entropy(input=flat_all_component_logits, target=flat_batch[1:])
-        masked_ce_loss = F.cross_entropy(input=flat_masked_component_logits, target=flat_batch[1:])
-        stochastic_ce_loss = F.cross_entropy(input=flat_stochastic_component_logits, target=flat_batch[1:])
-        clamped_ce_loss = F.cross_entropy(input=flat_clamped_masked_component_logits, target=flat_batch[1:])
-        binned_ce_loss = F.cross_entropy(input=flat_binned_masked_component_logits, target=flat_batch[1:])
-        zero_masked_ce_loss = F.cross_entropy(
-            input=flat_zero_masked_component_logits[:-1], target=flat_batch[1:]
-        )
-        target_ce_loss = F.cross_entropy(input=flat_target_logits, target=flat_batch[1:])
+
+        # Remove the last prediction (since there's no ground truth token for it)
+        flat_zero_masked_component_logits = einops.rearrange(zero_masked_component_logits[:, :-1], "... vocab -> (...) vocab")
+        flat_all_component_logits = einops.rearrange( all_components_logits[:, :-1], "... vocab -> (...) vocab")
+        flat_masked_component_logits = einops.rearrange(masked_component_logits[:, :-1], "... vocab -> (...) vocab")
+        flat_stochastic_component_logits = einops.rearrange(stochastic_component_logits[:, :-1], "... vocab -> (...) vocab")
+        flat_clamped_masked_component_logits = einops.rearrange(clamped_masked_component_logits[:, :-1], "... vocab -> (...) vocab")
+        flat_binned_masked_component_logits = einops.rearrange(binned_masked_component_logits[:, :-1], "... vocab -> (...) vocab")
+        flat_target_logits = einops.rearrange(target_logits[:, :-1], "... vocab -> (...) vocab")
+
+        all_components_ce_loss = F.cross_entropy(input=flat_all_component_logits, target=flat_batch)
+        masked_ce_loss = F.cross_entropy(input=flat_masked_component_logits, target=flat_batch)
+        stochastic_ce_loss = F.cross_entropy(input=flat_stochastic_component_logits, target=flat_batch)
+        clamped_ce_loss = F.cross_entropy(input=flat_clamped_masked_component_logits, target=flat_batch)
+        binned_ce_loss = F.cross_entropy(input=flat_binned_masked_component_logits, target=flat_batch)
+        zero_masked_ce_loss = F.cross_entropy(input=flat_zero_masked_component_logits, target=flat_batch)
+        target_ce_loss = F.cross_entropy(input=flat_target_logits, target=flat_batch)
+
     elif task == "cv":
         assert labels is not None, "Labels must be provided for classification tasks"
         # For classification tasks, we assume the logits are already in the correct format
@@ -377,7 +369,7 @@ def calc_accuracies(
     elif task == "cv":
         # For classification tasks, we assume the logits are already in the correct format
         # and we can directly calculate accuracies.
-        unmasked_accuracy = (unmasked_component_logits.argmax(dim=-1) == labels).float().mean()
+        all_components_accuracy = (all_components_logits.argmax(dim=-1) == labels).float().mean()
         masked_accuracy = (masked_component_logits.argmax(dim=-1) == labels).float().mean()
         target_accuracy = (target_logits.argmax(dim=-1) == labels).float().mean()
         zero_masked_accuracy = (zero_masked_component_logits.argmax(dim=-1) == labels).float().mean()
