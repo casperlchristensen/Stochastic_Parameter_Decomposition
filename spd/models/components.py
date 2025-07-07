@@ -79,6 +79,7 @@ class GateGraph(nn.Module):
         )
         self.subcomponent_to_summary = nn.Linear(d_subcomponent, d_summary)
         self.summary_to_subcomponent = nn.Linear(d_summary, d_subcomponent)
+        self.summary_to_summary = nn.Linear(d_summary, d_summary)
         self.subcomponent_gate = nn.Linear(
             in_features=d_subcomponent,
             out_features=1,  # C subcomponents
@@ -109,8 +110,11 @@ class GateGraph(nn.Module):
             deg = A.sum(dim=-1, keepdim=True).clamp(min=1)  # avoid /0
             return A / deg
 
+        summary_adj = torch.ones((self.num_components, self.num_components), dtype=torch.float)
         sub_to_summary_adjacency = row_norm(sub_to_summary_adjacency.float())
         summary_to_sub_adjacency = row_norm(summary_to_sub_adjacency.float())
+        summary_adj = row_norm(summary_adj)
+        self.register_buffer("summary_to_summary", summary_adj.to(self.subcomponent_proj.weight.device))
         self.register_buffer("sub_to_summary_adjacency", sub_to_summary_adjacency.to(self.subcomponent_proj.weight.device))
         self.register_buffer("summary_to_sub_adjacency", summary_to_sub_adjacency.to(self.subcomponent_proj.weight.device))
 
@@ -140,14 +144,19 @@ class GateGraph(nn.Module):
             self._get_edge_indices()
 
         # Convert subcomponents to x
-        x = self._convert_subcomponents_to_x(components_inner_act)
+        x_orig = self._convert_subcomponents_to_x(components_inner_act)
 
-        x = einops.einsum(self.sub_to_summary_adjacency, x, "a b, ... b dsubcomponent -> ... a dsubcomponent")
+        x = einops.einsum(self.sub_to_summary_adjacency, x_orig, "a b, ... b dsubcomponent -> ... a dsubcomponent")
         x = self.subcomponent_to_summary(x)  # Shape is (... C * num_components, dsummary)
         x = F.gelu(x)
         x = einops.einsum(self.summary_to_sub_adjacency.to(x.device), x, "a b, ... b dsummary -> ... a dsummary")
+        summaries_orig = x[..., -self.num_components:, :]
+        summaries = einops.einsum(self.summary_to_summary, summaries_orig, "a b, ... b d -> ... a d")
+        summaries = F.gelu(self.summary_to_summary(summaries))  + summaries_orig
+        x[..., -self.num_components:, :] = summaries
         x = self.summary_to_subcomponent(x)  # Shape is (... C * num_components, dsubcomponent)
         x = F.gelu(x)
+        x = x + x_orig
         x = self.subcomponent_gate(x)  # Shape is (... C * num_components, 1)
         x = x.squeeze(-1)  # Remove the last dimension, now shape is (... C * num_components)
         # Now we can get rid of the summary nodes, as we only care about the subcomponent importance
@@ -175,6 +184,7 @@ class GateGraphFast(nn.Module):
 
         self.sub_proj = nn.Linear(1, d_subcomponent)
         self.sub_to_sum = nn.Linear(d_subcomponent, d_summary)
+        self.sub_to_sub = nn.Linear(d_subcomponent, d_subcomponent)
         self.sum_to_sub = nn.Linear(d_summary, d_subcomponent)
         self.sub_gate = nn.Linear(d_subcomponent, 1)
 
@@ -185,6 +195,12 @@ class GateGraphFast(nn.Module):
 
         summary = sub.sum(dim=-2) / self.C
         summary = F.gelu(self.sub_to_sum(summary))
+
+        global_sum = summary.sum(dim=-2, keepdim=True) / self.n
+        global_sum = self.sub_to_sub(global_sum)
+        global_sum = F.gelu(global_sum)
+
+        summary = summary + global_sum
 
         sub = sub + F.gelu(self.sum_to_sub(summary)).unsqueeze(-2)
 
