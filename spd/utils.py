@@ -155,35 +155,90 @@ def get_lr_with_warmup(
         return lr * (step / warmup_steps)
     return lr * lr_schedule_fn(step - warmup_steps, steps - warmup_steps)
 
-def get_annealed_pnorm(
-    step: int,
-    steps: int,
-    pnorm: float,
-    min_anneal: float = 0.5,
-    method: Literal["linear", "cosine", "exponential"] = "cosine",
-) -> float:
-    """Get the annealed pnorm value based on the current step and total steps.
+class PnormScheduler:
+    """Scheduler for pnorm value during training."""
+    
+    def __init__(self, start_value=2.0, end_value=0.5, warmup_fraction=0.5, 
+                 schedule_type='linear', total_steps=None):
+        """
+        Initialize the pnorm scheduler.
+        
+        Args:
+            start_value: Initial pnorm value (default: 2.0)
+            end_value: Final pnorm value (default: 0.5)
+            warmup_fraction: Fraction of training before scheduling starts (default: 0.5)
+            schedule_type: Type of scheduling ('linear', 'cosine', 'exponential')
+            total_steps: Total number of training steps (optional, can be set later)
+        """
+        self.start_value = start_value
+        self.end_value = end_value
+        self.warmup_fraction = warmup_fraction
+        self.schedule_type = schedule_type
+        self.total_steps = total_steps
+        
+    def set_total_steps(self, total_steps):
+        """Set total steps if not provided during initialization."""
+        self.total_steps = total_steps
+        
+    def get_pnorm(self, current_step):
+        """
+        Get the pnorm value for the current training step.
+        
+        Args:
+            current_step: Current training step
+            
+        Returns:
+            float: The pnorm value for this step
+        """
+        if self.total_steps is None:
+            raise ValueError("Total steps must be set before using the scheduler")
+            
+        # Before warmup period, return start value
+        warmup_steps = int(self.warmup_fraction * self.total_steps)
+        if current_step < warmup_steps:
+            return self.start_value
+            
+        # Calculate progress after warmup
+        remaining_steps = self.total_steps - warmup_steps
+        progress = (current_step - warmup_steps) / remaining_steps
+        progress = min(1.0, progress)  # Clamp to [0, 1]
+        
+        # Apply scheduling
+        if self.schedule_type == 'linear':
+            return self._linear_schedule(progress)
+        elif self.schedule_type == 'cosine':
+            return self._cosine_schedule(progress)
+        elif self.schedule_type == 'exponential':
+            return self._exponential_schedule(progress)
+        else:
+            raise ValueError(f"Unknown schedule type: {self.schedule_type}")
+            
+    def _linear_schedule(self, progress):
+        """Linear interpolation between start and end values."""
+        return self.start_value + (self.end_value - self.start_value) * progress
+        
+    def _cosine_schedule(self, progress):
+        """Cosine annealing schedule."""
+        import math
+        cosine_progress = 0.5 * (1 + math.cos(math.pi * (1 - progress)))
+        return self.end_value + (self.start_value - self.end_value) * cosine_progress
+        
+    def _exponential_schedule(self, progress):
+        """Exponential decay schedule."""
+        import math
+        # Calculate decay rate
+        decay_rate = math.log(self.end_value / self.start_value)
+        return self.start_value * math.exp(decay_rate * progress)
 
-    Args:
-        step: The current training step.
-        steps: The total number of training steps.
-        pnorm: The initial pnorm value to anneal from.
-        min_anneal: The minimum pnorm value to anneal to.
-        method: The annealing method to use. Options are "linear", "cosine", or "exponential".
-
-    Returns:
-        The annealed pnorm value for the current step.
-    """
-    if method == "linear":
-        annealed_norm = min_anneal + (pnorm - min_anneal) * (1 - step / steps)
-    elif method == "cosine":
-        annealed_norm = min_anneal + 0.5 * (pnorm - min_anneal) * (1 + np.cos(np.pi * step / steps))
-    elif method == "exponential":
-        gamma = (min_anneal / pnorm) ** (1 / steps)
-        annealed_norm = pnorm * (gamma ** step)
-    else:
-        raise ValueError(f"Unknown annealing method: {method}")
-    return annealed_norm
+def get_pnorm_schedule_fn(
+    start_value: float,
+    end_value: float,
+    warmup_fraction: float,
+    schedule_type: Literal["linear", "cosine", "exponential"],
+    total_steps: int | None = None,
+) -> Callable[[int], float]:
+    """Get a function that returns the pnorm value for a given step."""
+    return PnormScheduler(start_value, end_value, warmup_fraction, schedule_type, total_steps).get_pnorm
 
 
 def replace_deprecated_param_names(

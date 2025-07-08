@@ -164,6 +164,10 @@ class Config(BaseModel):
     )
 
     # Minimality
+    importance_minimality_coeff: NonNegativeFloat = Field(
+        ...,
+        description="Coefficient for importance minimality loss",
+    )
     pnorm: PositiveFloat = Field(
         ...,
         description="The p-value used for the importance minimality loss",
@@ -172,13 +176,21 @@ class Config(BaseModel):
         default=0.5,
         description="Minimum p-value for the importance minimality loss",
     )
-    p_anneal: bool = Field(
-        default=True,
-        description="If True, anneal the p-value from pnorm to pnorm_min over the course of training",
+    pannealing: bool = Field(
+        default=False,
+        description="If True, use pannealing for the importance minimality loss",
+    )
+    p_anneal_schedule_type: Literal["cosine", "linear", "exponential"] = Field(
+        default="cosine",
+        description="Type of schedule to use for annealing the p-value in the importance minimality loss",
     )
     p_anneal_steps: PositiveInt | None = Field(
         default=None,
         description="Number of steps over which to anneal the p-value (None means across entire training)",
+    )
+    p_anneal_warmup_pct: Probability = Field(
+        default=0.6,
+        description="Fraction of total steps to linearly warm up the p-value",
     )
     importance_minimality_coeff: NonNegativeFloat = Field(
         ...,

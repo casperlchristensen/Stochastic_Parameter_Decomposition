@@ -40,7 +40,7 @@ from spd.utils import (
     extract_batch_data,
     get_lr_schedule_fn,
     get_lr_with_warmup,
-    get_annealed_pnorm,
+    get_pnorm_schedule_fn,
 )
 
 TASK_TO_INPUT_KEY = {
@@ -163,6 +163,16 @@ def optimize(
     lr_schedule_fn = get_lr_schedule_fn(config.lr_schedule, config.lr_exponential_halflife)
     logger.info(f"Base LR scheduler created: {config.lr_schedule}")
 
+    # Or create different scheduler configurations
+    if config.pannealing:
+        cosine_scheduler = get_pnorm_schedule_fn(
+            start_value=config.pnorm,
+            end_value=config.pnorm_min,
+            warmup_fraction=config.p_anneal_warmup_pct,
+            schedule_type=config.p_anneal_schedule_type,
+            total_steps=config.p_anneal_steps or config.steps,
+        )
+
     n_params = sum(model.model.get_parameter(n + ".weight").numel() for n in components)
 
     log_data = {}
@@ -183,16 +193,14 @@ def optimize(
             lr_schedule_fn=lr_schedule_fn,
             lr_warmup_pct=config.lr_warmup_pct,
         )
+        if config.pannealing:
+            pnorm = cosine_scheduler(step) # type: ignore
+        else:
+            pnorm = config.pnorm
+
         for group in optimizer.param_groups:
             group["lr"] = step_lr
         log_data["lr"] = step_lr
-
-        pnorm = get_annealed_pnorm(
-            step=step,
-            steps=config.p_anneal_steps or config.steps,
-            pnorm=config.pnorm,
-            min_anneal=config.pnorm_min,
-        )
 
         optimizer.zero_grad()
 
