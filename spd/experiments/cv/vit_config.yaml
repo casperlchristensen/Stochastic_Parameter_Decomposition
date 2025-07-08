@@ -32,7 +32,8 @@ embedding_recon_coeff: null
 is_embed_unembed_recon: false
 pnorm: 2.0
 pnorm_min: 0.5
-p_anneal: true
+p_anneal_steps: 1000
+pannealing: true
 output_loss_type: mse
 faithfulness_scale: null
 
