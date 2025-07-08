@@ -40,6 +40,7 @@ from spd.utils import (
     extract_batch_data,
     get_lr_schedule_fn,
     get_lr_with_warmup,
+    get_pnorm_schedule_fn,
 )
 
 TASK_TO_INPUT_KEY = {
@@ -162,6 +163,16 @@ def optimize(
     lr_schedule_fn = get_lr_schedule_fn(config.lr_schedule, config.lr_exponential_halflife)
     logger.info(f"Base LR scheduler created: {config.lr_schedule}")
 
+    # Or create different scheduler configurations
+    if config.pannealing:
+        cosine_scheduler = get_pnorm_schedule_fn(
+            start_value=2.0,
+            end_value=0.5,
+            warmup_fraction=0.6,  # Start after 60% of training
+            schedule_type='cosine',
+            total_steps=config.steps
+        )
+
     n_params = sum(model.model.get_parameter(n + ".weight").numel() for n in components)
 
     log_data = {}
@@ -182,6 +193,9 @@ def optimize(
             lr_schedule_fn=lr_schedule_fn,
             lr_warmup_pct=config.lr_warmup_pct,
         )
+        if config.pannealing:
+            config.pnorm = cosine_scheduler(step)
+
         for group in optimizer.param_groups:
             group["lr"] = step_lr
         log_data["lr"] = step_lr

@@ -172,13 +172,17 @@ class Config(BaseModel):
     )
 
     # Minimality
+    importance_minimality_coeff: NonNegativeFloat = Field(
+        ...,
+        description="Coefficient for importance minimality loss",
+    )
     pnorm: PositiveFloat = Field(
         ...,
         description="The p-value used for the importance minimality loss",
     )
-    importance_minimality_coeff: NonNegativeFloat = Field(
-        ...,
-        description="Coefficient for importance minimality loss",
+    pannealing: bool = Field(
+        default=False,
+        description="If True, use pannealing for the importance minimality loss",
     )
     schatten_coeff: NonNegativeFloat | None = Field(
         default=None,
@@ -313,7 +317,7 @@ class Config(BaseModel):
         description="Nested task-specific configuration selected by the `task_name` discriminator",
     )
 
-    gate_config: GraphGateConfig | GateMLPConfig = Field(
+    gate_config: GraphGateConfig | GateMLPConfig | None = Field(
         default_factory=lambda: GateMLPConfig(),
         discriminator="gate_type",
         description="Nested gate-specific configuration selected by the `gate_type` discriminator",

@@ -275,7 +275,7 @@ class ComponentModel(nn.Module):
             config = Config(**yaml.safe_load(f))
 
         assert (
-            config.pretrained_model_path is not None and config.pretrained_model_class is not None
+            (config.pretrained_model_path is not None or config.pretrained_model_name_hf is not None) and config.pretrained_model_class is not None
         ), (
             "pretrained_model_name and pretrained_model_class must be specified in the config to "
             "reload a ComponentModel."
@@ -287,12 +287,12 @@ class ComponentModel(nn.Module):
             model_name_hf=config.pretrained_model_name_hf,
         )
         base_model = base_model_raw[0] if isinstance(base_model_raw, tuple) else base_model_raw
-
+        gate_config = config.gate_config
         comp_model = ComponentModel(
             base_model=base_model,
             target_module_patterns=config.target_module_patterns,
             C=config.C,
-            n_ci_mlp_neurons=config.n_ci_mlp_neurons,
+            gate_config=gate_config,
             pretrained_model_output_attr=config.pretrained_model_output_attr,
         )
         comp_model.load_state_dict(model_weights)
