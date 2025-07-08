@@ -220,7 +220,7 @@ class PnormScheduler:
     def _cosine_schedule(self, progress):
         """Cosine annealing schedule."""
         import math
-        cosine_progress = 0.5 * (1 + math.cos(math.pi * (1 - progress)))
+        cosine_progress = 0.5 * (1 + math.cos(math.pi * progress))
         return self.end_value + (self.start_value - self.end_value) * cosine_progress
         
     def _exponential_schedule(self, progress):
