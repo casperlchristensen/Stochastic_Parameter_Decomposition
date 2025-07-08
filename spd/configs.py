@@ -107,15 +107,7 @@ class GraphGateConfig(BaseModel):
         default="graph",
         description="Type of graph gate to use for the decomposition",
     )
-    use_fast_graph: bool = Field(
-        default=True,
-        description="If True, use the fast graph gate implementation",
-    )
-    d_subcomponent: PositiveInt = Field(
-        default=16,
-        description="Dimensionality of the subcomponents in the graph gate",
-    )
-    d_summary: PositiveInt = Field(
+    d_node: PositiveInt = Field(
         default=16,
         description="Dimensionality of the summary vector in the graph gate",
     )
@@ -175,6 +167,18 @@ class Config(BaseModel):
     pnorm: PositiveFloat = Field(
         ...,
         description="The p-value used for the importance minimality loss",
+    )
+    pnorm_min: PositiveFloat = Field(
+        default=0.5,
+        description="Minimum p-value for the importance minimality loss",
+    )
+    p_anneal: bool = Field(
+        default=True,
+        description="If True, anneal the p-value from pnorm to pnorm_min over the course of training",
+    )
+    p_anneal_steps: PositiveInt | None = Field(
+        default=None,
+        description="Number of steps over which to anneal the p-value (None means across entire training)",
     )
     importance_minimality_coeff: NonNegativeFloat = Field(
         ...,

@@ -427,7 +427,8 @@ def calculate_losses(
     target_out: Tensor,
     device: str,
     n_params: int,
-    faithfulness_scale_fn: Callable[..., Float[Tensor, ""]]
+    faithfulness_scale_fn: Callable[..., Float[Tensor, ""]],
+    pnorm: float,
 ) -> tuple[Float[Tensor, ""], dict[str, float]]:
     """Calculate all losses and return total loss and individual loss terms.
 
@@ -538,7 +539,7 @@ def calculate_losses(
 
     # Importance minimality loss
     importance_minimality_loss = calc_importance_minimality_loss(
-        ci_upper_leaky=causal_importances_upper_leaky, pnorm=config.pnorm
+        ci_upper_leaky=causal_importances_upper_leaky, pnorm=pnorm
     )
     total_loss += config.importance_minimality_coeff * importance_minimality_loss
     loss_terms["loss/importance_minimality"] = importance_minimality_loss.item()
@@ -547,7 +548,7 @@ def calculate_losses(
     if config.schatten_coeff is not None:
         schatten_loss = calc_schatten_loss(
             ci_upper_leaky=causal_importances_upper_leaky,
-            pnorm=config.pnorm,
+            pnorm=pnorm,
             components=components,
             device=device,
         )

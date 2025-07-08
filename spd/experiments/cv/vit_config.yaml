@@ -10,9 +10,7 @@ n_mask_samples: 1
 
 gate_config:
   gate_type: "graph" # "graph", "mlp",
-  d_subcomponent: 32
-  d_summary: 32
-  use_fast_graph: true # Use GateGraphFast instead of GateGraph - only possible for simple star-graphs
+  d_node: 16 # Dimension of the node features in the graph
 
 target_module_patterns: ["vit.encoder.layer.*.attention.attention.*",
     "vit.encoder.layer.*.attention.output.dense",
@@ -33,12 +31,14 @@ schatten_coeff: null
 embedding_recon_coeff: null
 is_embed_unembed_recon: false
 pnorm: 2.0
+pnorm_min: 0.5
+p_anneal: true
 output_loss_type: mse
-faithfulness_scale: rms
+faithfulness_scale: null
 
 # --- Training ---
-batch_size: 64
-steps: 5_000
+batch_size: 32
+steps: 10_000
 lr: 1e-4
 lr_schedule: constant
 lr_warmup_pct: 0.01

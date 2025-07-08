@@ -62,3 +62,24 @@ def init_param_(
     std = gain / math.sqrt(fan_val)
     with torch.no_grad():
         param.normal_(mean, std, generator=generator)
+
+
+def match_dimensions(tensor1: Tensor, tensor2: Tensor, leading: bool = True) -> Tensor:
+    """Unsqueezes until tensor1 has the same number of dimensions as tensor2 and then expands it.
+
+    Args:
+        tensor1: The first tensor to match.
+        tensor2: The second tensor to match.
+        leading: If True, add dimensions to the front; otherwise, add to the back.
+
+    Returns:
+        A new tensor with dimensions matched to the larger of the two tensors.
+    """
+    if leading:
+        while tensor1.dim() < tensor2.dim():
+            tensor1 = tensor1.unsqueeze(0)
+        return tensor1.expand(*tensor2.shape[:-1], -1)
+    else:
+        while tensor1.dim() < tensor2.dim():
+            tensor1 = tensor1.unsqueeze(-1)
+        return tensor1.expand(-1, *tensor2.shape[1:])

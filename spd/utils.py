@@ -155,6 +155,36 @@ def get_lr_with_warmup(
         return lr * (step / warmup_steps)
     return lr * lr_schedule_fn(step - warmup_steps, steps - warmup_steps)
 
+def get_annealed_pnorm(
+    step: int,
+    steps: int,
+    pnorm: float,
+    min_anneal: float = 0.5,
+    method: Literal["linear", "cosine", "exponential"] = "cosine",
+) -> float:
+    """Get the annealed pnorm value based on the current step and total steps.
+
+    Args:
+        step: The current training step.
+        steps: The total number of training steps.
+        pnorm: The initial pnorm value to anneal from.
+        min_anneal: The minimum pnorm value to anneal to.
+        method: The annealing method to use. Options are "linear", "cosine", or "exponential".
+
+    Returns:
+        The annealed pnorm value for the current step.
+    """
+    if method == "linear":
+        annealed_norm = min_anneal + (pnorm - min_anneal) * (1 - step / steps)
+    elif method == "cosine":
+        annealed_norm = min_anneal + 0.5 * (pnorm - min_anneal) * (1 + np.cos(np.pi * step / steps))
+    elif method == "exponential":
+        gamma = (min_anneal / pnorm) ** (1 / steps)
+        annealed_norm = pnorm * (gamma ** step)
+    else:
+        raise ValueError(f"Unknown annealing method: {method}")
+    return annealed_norm
+
 
 def replace_deprecated_param_names(
     params: dict[str, Float[Tensor, "..."]], name_map: dict[str, str]

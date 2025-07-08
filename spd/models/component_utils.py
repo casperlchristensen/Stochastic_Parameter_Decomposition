@@ -8,7 +8,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 
 from spd.models.component_model import ComponentModel
-from spd.models.components import EmbeddingComponent, Gate, GateMLP, GateGraph, LinearComponent
+from spd.models.components import EmbeddingComponent, Gate, GateMLP, GateStarGraph, LinearComponent
 from spd.utils import extract_batch_data
 
 
@@ -55,10 +55,10 @@ def component_activation_statistics(
     input_key: str = "input_ids",
 ) -> tuple[dict[str, float], dict[str, Float[Tensor, " C"]]]:
     """Get the number and strength of the masks over the full dataset."""
-    use_graph_gates = isinstance(model.gates, GateGraph)
+    use_graph_gates = isinstance(model.gates, GateStarGraph)
 
     # We used "-" instead of "." as module names can't have "." in them
-    gates: dict[str, Gate | GateMLP | GateGraph] = {
+    gates: dict[str, Gate | GateMLP | GateStarGraph] = {
         k.removeprefix("gates.").replace("-", "."): v for k, v in model.gates.items()
     } if not use_graph_gates else model.gates # type: ignore
     components: dict[str, LinearComponent | EmbeddingComponent] = {
@@ -131,7 +131,7 @@ def upper_leaky_relu_(x: Tensor, alpha: float = 0.01) -> Tensor:
 def calc_causal_importances(
     pre_weight_acts: dict[str, Float[Tensor, "... d_in"] | Int[Tensor, "... pos"]],
     As: Mapping[str, Float[Tensor, "d_in C"]],
-    gates: Mapping[str, Gate | GateMLP | GateGraph],
+    gates: Mapping[str, Gate | GateMLP | GateStarGraph],
     detach_inputs: bool = False,
 ) -> tuple[dict[str, Float[Tensor, "... C"]], dict[str, Float[Tensor, "... C"]]]:
     """Calculate component activations and causal importances in one pass to save memory.

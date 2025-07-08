@@ -40,6 +40,7 @@ from spd.utils import (
     extract_batch_data,
     get_lr_schedule_fn,
     get_lr_with_warmup,
+    get_annealed_pnorm,
 )
 
 TASK_TO_INPUT_KEY = {
@@ -186,6 +187,13 @@ def optimize(
             group["lr"] = step_lr
         log_data["lr"] = step_lr
 
+        pnorm = get_annealed_pnorm(
+            step=step,
+            steps=config.p_anneal_steps or config.steps,
+            pnorm=config.pnorm,
+            min_anneal=config.pnorm_min,
+        )
+
         optimizer.zero_grad()
 
         try:
@@ -216,6 +224,7 @@ def optimize(
             model=model,
             batch=batch,
             config=config,
+            pnorm=pnorm,
             components=components,
             causal_importances=causal_importances,
             causal_importances_upper_leaky=causal_importances_upper_leaky,
@@ -233,6 +242,7 @@ def optimize(
             if step % config.print_freq == 0:
                 tqdm.write(f"--- Step {step} ---")
                 tqdm.write(f"LR: {step_lr:.6f}")
+                tqdm.write(f"PNorm: {pnorm:.6f}")
                 tqdm.write(f"Total Loss: {log_data['loss/total']:.7f}")
                 for name, value in loss_terms.items():
                     tqdm.write(f"{name}: {value:.7f}")

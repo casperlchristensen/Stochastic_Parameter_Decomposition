@@ -14,7 +14,7 @@ from torch import Tensor, nn
 from wandb.apis.public import Run
 
 from spd.configs import Config, GraphGateConfig, GateMLPConfig
-from spd.models.components import EmbeddingComponent, Gate, GateGraph, GateGraphFast, GateMLP, LinearComponent
+from spd.models.components import EmbeddingComponent, Gate, GateStarGraph, GateMLP, LinearComponent
 from spd.spd_types import WANDB_PATH_PREFIX, ModelPath
 from spd.utils import load_pretrained
 from spd.wandb_utils import download_wandb_file, fetch_latest_wandb_checkpoint, fetch_wandb_run_dir
@@ -45,30 +45,16 @@ class ComponentModel(nn.Module):
         )
 
         if gate_config.gate_type == "graph":
-            if gate_config.use_fast_graph:
-                self.gates = nn.ModuleDict(
-                    {
-                        "graph_gate":
-                        GateGraphFast(
-                            C=C,
-                            components=self.components,
-                            d_subcomponent=16,  # Default dimension for subcomponents
-                            d_summary=16,  # Default dimension for summary
-                        )
-                    }
-                )
-            else:
-                self.gates = nn.ModuleDict(
-                    {
-                        "graph_gate":
-                        GateGraph(
-                            C=C,
-                            components=self.components,
-                            d_subcomponent=gate_config.d_subcomponent,
-                            d_summary=gate_config.d_summary,
-                        )
-                    }
-                )
+            self.gates = nn.ModuleDict(
+                {
+                    "graph_gate":
+                    GateStarGraph(
+                        C=C,
+                        components=self.components,
+                        d_node=gate_config.d_node,
+                    )
+                }
+            )
         elif gate_config.gate_type == "mlp":
             gate_class = GateMLP if gate_config.n_ci_mlp_neurons > 0 else Gate
             gate_kwargs = {"C": C}
