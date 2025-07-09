@@ -133,6 +133,7 @@ def calc_causal_importances(
     As: Mapping[str, Float[Tensor, "d_in C"]],
     gates: Mapping[str, Gate | GateMLP | GateStarGraph],
     detach_inputs: bool = False,
+    return_gate_outputs: bool = False,
 ) -> tuple[dict[str, Float[Tensor, "... C"]], dict[str, Float[Tensor, "... C"]]]:
     """Calculate component activations and causal importances in one pass to save memory.
 
@@ -171,6 +172,8 @@ def calc_causal_importances(
             for param_name in pre_weight_acts
         }
     else:
+        if return_gate_outputs:
+            gate_outputs = {}
         for param_name in pre_weight_acts:
             acts = pre_weight_acts[param_name]
 
@@ -185,5 +188,10 @@ def calc_causal_importances(
             gate_output = gates[param_name](gate_input)
             causal_importances[param_name] = lower_leaky_relu(gate_output)
             causal_importances_upper_leaky[param_name] = upper_leaky_relu(gate_output)
+            if return_gate_outputs:
+                gate_outputs[param_name] = gate_output
 
-    return causal_importances, causal_importances_upper_leaky
+    if return_gate_outputs:
+        return causal_importances, causal_importances_upper_leaky, gate_outputs
+    else:
+        return causal_importances, causal_importances_upper_leaky
