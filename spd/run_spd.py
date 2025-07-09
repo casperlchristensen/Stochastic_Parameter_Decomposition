@@ -33,6 +33,7 @@ from spd.plotting import (
     create_embed_ci_sample_table,
     plot_ci_histograms,
     plot_mean_component_activation_counts,
+    plot_causal_importance_feature_frequencies,
 )
 from spd.utils import (
     calc_kl_divergence_lm,
@@ -399,6 +400,14 @@ def optimize(
 
                 ci_histogram_figs = plot_ci_histograms(causal_importances=causal_importances)
                 fig_dict.update(ci_histogram_figs)
+
+                # Add the new feature frequency histograms
+                ci_feature_freq_figs = plot_causal_importance_feature_frequencies(
+                    causal_importances=causal_importances,
+                    thresholds=[0.1, 1.0],
+                    n_samples=5000
+                )
+                fig_dict.update(ci_feature_freq_figs)
 
                 mean_component_activation_counts = component_activation_statistics(
                     model=model, dataloader=eval_loader, n_steps=n_eval_steps, device=device, input_key=input_key

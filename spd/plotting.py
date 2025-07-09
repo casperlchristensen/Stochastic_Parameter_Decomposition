@@ -483,3 +483,78 @@ def create_toy_model_plot_results(
         components=components, all_perm_indices=all_perm_indices
     )
     return fig_dict
+    
+def plot_causal_importance_feature_frequencies(
+    causal_importances: dict[str, Float[Tensor, "... C"]],
+    thresholds: list[float] = [0.1, 1.0],
+    n_samples: int = 5000,
+) -> dict[str, plt.Figure]:
+    """
+    Plot histogram of feature activation frequencies for causal importances.
+    
+    Args:
+        causal_importances: Dictionary of tensors, each of shape (batch, sequence, C)
+        thresholds: List of threshold values to plot
+        n_samples: Number of samples to use for frequency calculation
+    
+    Returns:
+        dict: Dictionary of figure names to matplotlib figures
+    """
+    
+    fig_dict = {}
+    
+    # Process each layer in the dictionary
+    for layer_name_raw, layer_ci in causal_importances.items():
+        layer_name = layer_name_raw.replace(".", "_")
+        
+        # Convert to tensor if needed
+        if isinstance(layer_ci, np.ndarray):
+            layer_ci = torch.from_numpy(layer_ci)
+        
+        # Handle sample limiting
+        actual_samples = min(n_samples, layer_ci.shape[0])
+        ci_subset = layer_ci[:actual_samples]  # Shape: (batch, seq, C)
+        
+        for threshold in thresholds:
+            # Vectorized calculation of activation frequencies
+            # Shape: (batch, seq, C) -> (C,)
+            # Calculate fraction of positions where each feature > threshold
+            activation_frequencies = (ci_subset >= threshold).float().mean(dim=(0, 1)).cpu().numpy()
+            
+            # Handle case where all frequencies might be zero
+            non_zero_freqs = activation_frequencies[activation_frequencies > 0]
+            if len(non_zero_freqs) == 0:
+                min_freq = 1e-6
+            else:
+                min_freq = non_zero_freqs.min()
+            
+            # Create log-spaced bins
+            log_bins = np.logspace(np.log10(min_freq/2), np.log10(1.0), 20)
+            
+            # Create the histogram
+            fig, ax = plt.subplots(figsize=(10, 6))
+            counts, bins, patches = ax.hist(activation_frequencies, bins=log_bins, 
+                                           edgecolor='black', alpha=0.7)
+            
+            # Set log scale for x-axis
+            ax.set_xscale('log')
+            ax.set_xlabel('Causal Importance Activation Frequency')
+            ax.set_ylabel('Number of Components')
+            ax.set_title(f'Distribution of Causal Importance Values > {threshold} for {layer_name}')
+            ax.grid(True, alpha=0.3)
+            
+            # Add statistics
+            mean_freq = activation_frequencies.mean()
+            median_freq = np.median(activation_frequencies)
+            ax.axvline(mean_freq, color='red', linestyle='--', label=f'Mean: {mean_freq:.4f}')
+            ax.axvline(median_freq, color='orange', linestyle='--', label=f'Median: {median_freq:.4f}')
+            ax.legend()
+            
+            plt.tight_layout()
+            
+            # Add to figure dictionary with descriptive name
+            threshold_str = str(threshold).replace('.', '_')
+            fig_dict[f'ci_feature_freq_{layer_name}_threshold_{threshold_str}'] = fig
+            plt.close(fig)  # Close to prevent memory issues
+    
+    return fig_dict
