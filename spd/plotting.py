@@ -15,6 +15,366 @@ from torch import Tensor
 from spd.models.component_model import ComponentModel
 from spd.models.component_utils import calc_causal_importances
 from spd.models.components import EmbeddingComponent, Gate, GateMLP, LinearComponent
+import torch
+import numpy as np
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+    
+
+def plot_all_cos_sims(components, ci, layer_name, alive_mask, config, log_data):
+    frequencies = (ci >= 0.1).float().mean(dim=(0, 1))
+    # Get alive and dead masks
+    # alive_mask = components[layer_name].A.abs().sum(dim=0) > 0
+    # alt_alive_mask = 
+    dead_mask = ~alive_mask
+    display_dead = dead_mask.sum() > 0 and not config.remove_dead_components
+    
+    
+    # Split components into alive and dead
+    A_alive = components[layer_name].A[:, alive_mask]
+    B_alive = components[layer_name].B[alive_mask, :]
+    A_dead = components[layer_name].A[:, dead_mask]
+    B_dead = components[layer_name].B[dead_mask, :]
+    
+    alive_frequencies = frequencies[alive_mask].cpu().numpy()
+    
+
+    # Normalize alive components
+    normed_A_alive = torch.nn.functional.normalize(A_alive, dim=0)  # [d_model, n_components_alive]
+    normed_B_alive = torch.nn.functional.normalize(B_alive, dim=1)  # [n_components_alive, d_out]
+    
+    # Normalize dead components (if any exist)
+    if display_dead:
+        normed_A_dead = torch.nn.functional.normalize(A_dead, dim=0)  # [d_model, n_components_dead]
+        normed_B_dead = torch.nn.functional.normalize(B_dead, dim=1)  # [n_components_dead, d_out]
+    
+    # Compute cosine similarities for alive components
+    aa_cos_sim_alive = (normed_A_alive.T @ normed_A_alive).tril(diagonal=-1)
+    bb_cos_sim_alive = (normed_B_alive @ normed_B_alive.T).tril(diagonal=-1)
+    
+    # Find max & min for alive components
+    aa_max_alive = aa_cos_sim_alive.max(dim=0).values.cpu().numpy()
+    aa_min_alive = aa_cos_sim_alive.min(dim=0).values.cpu().numpy()
+    bb_max_alive = bb_cos_sim_alive.max(dim=0).values.cpu().numpy()
+    bb_min_alive = bb_cos_sim_alive.min(dim=0).values.cpu().numpy()
+    
+    # If there are dead components, compute their similarities
+    if display_dead:
+        # Compute cosine similarities between alive and dead A components
+        aa_cos_sim_alive_dead = normed_A_alive.T @ normed_A_dead  # [n_alive, n_dead]
+        aa_max_alive_dead = aa_cos_sim_alive_dead.max(dim=1).values.cpu().numpy()  # max over dead for each alive
+        aa_max_dead_alive = aa_cos_sim_alive_dead.max(dim=0).values.cpu().numpy()  # max over alive for each dead
+        aa_min_alive_dead = aa_cos_sim_alive_dead.min(dim=1).values.cpu().numpy()  # min over dead for each alive
+        aa_min_dead_alive = aa_cos_sim_alive_dead.min(dim=0).values.cpu().numpy()  # min over alive for each dead
+        
+        # Compute cosine similarities between alive and dead B components
+        bb_cos_sim_alive_dead = normed_B_alive @ normed_B_dead.T  # [n_alive, n_dead]
+        bb_max_alive_dead = bb_cos_sim_alive_dead.max(dim=1).values.cpu().numpy()  # max over dead for each alive
+        bb_max_dead_alive = bb_cos_sim_alive_dead.max(dim=0).values.cpu().numpy()  # max over alive for each dead
+        bb_min_alive_dead = bb_cos_sim_alive_dead.min(dim=1).values.cpu().numpy()  # min over dead for each alive
+        bb_min_dead_alive = bb_cos_sim_alive_dead.min(dim=0).values.cpu().numpy()  # min over alive for each dead
+
+        # Compute cosine similarities for dead components among themselves
+        aa_cos_sim_dead = (normed_A_dead.T @ normed_A_dead).tril(diagonal=-1)
+        bb_cos_sim_dead = (normed_B_dead @ normed_B_dead.T).tril(diagonal=-1)
+        
+        aa_max_dead = aa_cos_sim_dead.max(dim=0).values.cpu().numpy()
+        aa_min_dead = aa_cos_sim_dead.min(dim=0).values.cpu().numpy()
+        bb_max_dead = bb_cos_sim_dead.max(dim=0).values.cpu().numpy()
+        bb_min_dead = bb_cos_sim_dead.min(dim=0).values.cpu().numpy()
+
+    # Store in log_data
+    log_data[f"cos_sim/{layer_name}_aa_max_alive_mean"] = aa_max_alive.mean()
+    log_data[f"cos_sim/{layer_name}_aa_min_alive_mean"] = aa_min_alive.mean()
+    log_data[f"cos_sim/{layer_name}_bb_max_alive_mean"] = bb_max_alive.mean()
+    log_data[f"cos_sim/{layer_name}_bb_min_alive_mean"] = bb_min_alive.mean()
+
+
+    # Build the correlation data - start with alive components
+    correlation_dict = {
+        'Frequency': alive_frequencies,
+        'AA max (alive)': aa_max_alive,
+        'AA min (alive)': aa_min_alive,
+        'BB max (alive)': bb_max_alive,
+        'BB min (alive)': bb_min_alive,
+    }
+    
+    # Add alive-dead correlations if dead components exist
+    # if display_dead:
+    #     correlation_dict['AA max alive→dead'] = aa_max_alive_dead
+    #     correlation_dict['BB max alive→dead'] = bb_max_alive_dead
+    #     correlation_dict['AA min alive→dead'] = aa_min_alive_dead
+    #     correlation_dict['BB min alive→dead'] = bb_min_alive_dead
+    
+    # Create DataFrame for alive components
+    correlation_data = pd.DataFrame(correlation_dict)
+    
+    # If dead components exist, we need to create a custom correlation matrix
+    if display_dead:
+        # Create separate DataFrames for dead component features
+        dead_data = pd.DataFrame({
+            'AA max (dead)': aa_max_dead,
+            'AA min (dead)': aa_min_dead,
+            'BB max (dead)': bb_max_dead,
+            'BB min (dead)': bb_min_dead,
+            # 'AA max dead→alive': aa_max_dead_alive,
+            # 'BB max dead→alive': bb_max_dead_alive,
+            # 'AA min dead→alive': aa_min_dead_alive,
+            # 'BB min dead→alive': bb_min_dead_alive,
+        })
+        
+        # Calculate correlations
+        alive_corr = correlation_data.corr()
+        dead_corr = dead_data.corr()
+        
+        # Create a larger matrix to hold all correlations
+        all_features = list(correlation_data.columns) + list(dead_data.columns)
+        n_features = len(all_features)
+        full_corr_matrix = pd.DataFrame(np.nan, index=all_features, columns=all_features)
+        
+        # Fill in alive-alive correlations
+        full_corr_matrix.loc[alive_corr.index, alive_corr.columns] = alive_corr
+        
+        # Fill in dead-dead correlations
+        full_corr_matrix.loc[dead_corr.index, dead_corr.columns] = dead_corr
+        
+        # Calculate cross-correlations for specific pairs        # Calculate cross-correlations for specific pairs
+        # AA max alive→dead pairs with AA max (alive) - same length
+# Calculate cross-correlations for specific pairs
+        # Helper function to safely compute correlation
+        def safe_corrcoef(x, y):
+            """Compute correlation coefficient, returning NaN if either array has zero variance"""
+            if np.std(x) == 0 or np.std(y) == 0:
+                return np.nan
+            return np.corrcoef(x, y)[0, 1]
+
+        full_corr_matrix.loc['AA max (dead)', 'AA max (alive)'] = safe_corrcoef(aa_max_alive_dead, aa_max_alive)
+        full_corr_matrix.loc['AA max (dead)', 'AA min (alive)'] = safe_corrcoef(aa_max_alive_dead, aa_min_alive)
+        full_corr_matrix.loc['AA min (dead)', 'AA min (alive)'] = safe_corrcoef(aa_min_alive_dead, aa_min_alive)
+        full_corr_matrix.loc['AA min (dead)', 'AA max (alive)'] = safe_corrcoef(aa_min_alive_dead, aa_max_alive)
+
+        # Repeat for dead->alive
+        full_corr_matrix.loc['AA max (alive)', 'AA max (dead)'] = safe_corrcoef(aa_max_dead_alive, aa_max_dead)
+        full_corr_matrix.loc['AA max (alive)', 'AA min (dead)'] = safe_corrcoef(aa_max_dead_alive, aa_min_dead)
+        full_corr_matrix.loc['AA min (alive)', 'AA min (dead)'] = safe_corrcoef(aa_min_dead_alive, aa_min_dead)
+        full_corr_matrix.loc['AA min (alive)', 'AA max (dead)'] = safe_corrcoef(aa_min_dead_alive, aa_max_dead)
+
+        # # AA max alive→dead pairs with AA max (alive) - same length
+        full_corr_matrix.loc['BB max (dead)', 'BB max (alive)'] = safe_corrcoef(bb_max_alive_dead, bb_max_alive)
+        full_corr_matrix.loc['BB max (dead)', 'BB min (alive)'] = safe_corrcoef(bb_max_alive_dead, bb_min_alive)
+        full_corr_matrix.loc['BB min (dead)', 'BB min (alive)'] = safe_corrcoef(bb_min_alive_dead, bb_min_alive)
+        full_corr_matrix.loc['BB min (dead)', 'BB max (alive)'] = safe_corrcoef(bb_min_alive_dead, bb_max_alive)
+
+        # Repeat for dead->alive
+        full_corr_matrix.loc['BB max (alive)', 'BB max (dead)'] = safe_corrcoef(bb_max_dead_alive, bb_max_dead)
+        full_corr_matrix.loc['BB max (alive)', 'BB min (dead)'] = safe_corrcoef(bb_max_dead_alive, bb_min_dead)
+        full_corr_matrix.loc['BB min (alive)', 'BB min (dead)'] = safe_corrcoef(bb_min_dead_alive, bb_min_dead)
+        full_corr_matrix.loc['BB min (alive)', 'BB max (dead)'] = safe_corrcoef(bb_min_dead_alive, bb_max_dead)
+        correlation_matrix = full_corr_matrix
+    else:
+        correlation_matrix = correlation_data.corr()
+    
+    # Create a mask for NaN values
+    mask = correlation_matrix.isna()
+    
+    # Plot correlation matrix
+    fig_corr, ax_corr = plt.subplots(figsize=(12, 10))
+    sns.heatmap(correlation_matrix, annot=True, fmt='.3f', cmap='coolwarm', 
+                center=0, square=True, linewidths=1, 
+                cbar_kws={"shrink": 0.8}, ax=ax_corr, mask=mask,
+                vmin=-1, vmax=1)
+    ax_corr.set_title(f'Correlation Matrix - {layer_name}')
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    
+    
+    # Create histograms for all cosine similarities
+    n_histograms = 16 if display_dead else 4
+    n_cols = 4
+    n_rows = (n_histograms + n_cols - 1) // n_cols
+    
+    fig_hist, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4*n_rows))
+    if n_rows == 1:
+        axes = axes.reshape(1, -1)
+    
+    # Prepare histogram data
+    hist_data = [
+        ('AA max (alive)', aa_max_alive, (0, 1)),
+        ('AA min (alive)', aa_min_alive, (-1, 0)),
+        ('BB max (alive)', bb_max_alive, (0, 1)),
+        ('BB min (alive)', bb_min_alive, (-1, 0)),
+    ]
+    
+    if display_dead:
+        hist_data.extend([
+            ('AA max (dead)', aa_max_dead, (0, 1)),
+            ('AA min (dead)', aa_min_dead, (-1, 0)),
+            ('BB max (dead)', bb_max_dead, (0, 1)),
+            ('BB min (dead)', bb_min_dead, (-1, 0)),
+            ('AA max alive→dead', aa_max_alive_dead, (0, 1)),
+            ('BB max alive→dead', bb_max_alive_dead, (0, 1)),
+            ('AA max dead→alive', aa_max_dead_alive, (0, 1)),
+            ('BB max dead→alive', bb_max_dead_alive, (0, 1)),
+            ('AA min alive→dead', aa_min_alive_dead, (-1, 0)),
+            ('BB min alive→dead', bb_min_alive_dead, (-1, 0)),
+            ('AA min dead→alive', aa_min_dead_alive, (-1, 0)),
+            ('BB min dead→alive', bb_min_dead_alive, (-1, 0)),
+        ])
+    
+    for idx, (name, data, xlim) in enumerate(hist_data):
+        row = idx // n_cols
+        col = idx % n_cols
+        ax = axes[row, col]
+        
+        ax.hist(data, bins=50, alpha=0.7, edgecolor='black')
+        ax.set_xlabel(name)
+        ax.set_ylabel('Count')
+        ax.set_title(f'Distribution of {name}')
+        ax.set_xlim(xlim)
+        ax.grid(True, alpha=0.3)
+        # set y to log scale
+        ax.set_yscale('log')
+        
+        # Add mean and std statistics
+        mean_val = np.mean(data)
+        std_val = np.std(data)
+        ax.axvline(mean_val, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_val:.3f}')
+        ax.text(0.05, 0.95, f'Std: {std_val:.3f}', transform=ax.transAxes, 
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        ax.legend()
+    
+    # Hide unused axes
+    for idx in range(len(hist_data), n_rows * n_cols):
+        row = idx // n_cols
+        col = idx % n_cols
+        axes[row, col].axis('off')
+    
+    plt.suptitle(f'Cosine Similarity Distributions - {layer_name}', fontsize=14)
+    plt.tight_layout()
+    
+    return fig_corr, fig_hist
+
+
+def visualize_ab_vectors(components, ci,  layer_name, alive_mask, config, perplexity=15, n_iter=1000):
+    """
+    Create t-SNE visualizations for A and B vectors from a specific layer,
+    colored by alive/dead status.
+    
+    Args:
+        components: Dictionary containing component matrices
+        causal_importances: Dictionary containing causal importance scores
+        layer_name: Name of the layer to visualize
+        perplexity: t-SNE perplexity parameter
+        n_iter: Number of iterations for t-SNE
+        
+    Returns:
+        fig_dict: Dictionary containing the matplotlib figures
+        A_embedded: t-SNE embedded A vectors
+        B_embedded: t-SNE embedded B vectors
+        labels_A: Labels indicating alive/dead status
+    """
+    
+    # Initialize figure dictionary
+    fig_dict = {}
+    
+    # Get causal importance for this layer
+    # ci = causal_importances[layer_name]
+    frequencies = (ci >= 0.1).float().mean(dim=(0, 1))
+    
+    # Get alive and dead masks
+    display_dead = alive_mask.sum() > 0 and not config.remove_dead_components
+    dead_mask = ~alive_mask
+    
+    # Get A and B matrices
+    A = components[layer_name].A  # [d_model, n_components]
+    B = components[layer_name].B  # [n_components, d_out]
+    
+    # Create figure with two subplots for A and B vectors
+    fig_ab, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
+    
+    # Plot 1: t-SNE of A vectors
+    # A vectors are columns, so we need to transpose
+    A_vectors = A.T.cpu().numpy()  # [n_components, d_model]
+    
+    # Create labels for coloring
+    labels_A = np.where(alive_mask.cpu().numpy(), 'Alive', 'Dead')
+    
+    # Run t-SNE on A vectors TODO figure out max iter vs n_iter_without_progress
+    # tsne_A = TSNE(n_components=2, perplexity=perplexity, max_iter=n_iter, random_state=42)
+    tsne_A = TSNE(n_components=2, perplexity=perplexity, n_iter_without_progress=500, random_state=42)
+    A_embedded = tsne_A.fit_transform(A_vectors)
+    
+    # Plot A vectors
+    if display_dead:
+        labels_for_plot = ['Dead', 'Alive']
+    else:
+        labels_for_plot = ['Alive']
+    colors = {'Alive': 'blue', 'Dead': 'red'}
+    for label in labels_for_plot:  # Plot dead first so alive points appear on top
+        mask = labels_A == label
+        ax1.scatter(A_embedded[mask, 0], A_embedded[mask, 1], 
+                   label=label, alpha=0.6, s=50, c=colors[label])
+    
+    ax1.set_title(f't-SNE of A vectors (columns) - {layer_name}', fontsize=14)
+    ax1.set_xlabel('t-SNE dimension 1')
+    ax1.set_ylabel('t-SNE dimension 2')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: t-SNE of B vectors
+    # B vectors are rows
+    B_vectors = B.cpu().numpy()  # [n_components, d_out]
+    
+    # Run t-SNE on B vectors
+    tsne_B = TSNE(n_components=2, perplexity=perplexity, max_iter=n_iter, random_state=42)
+    B_embedded = tsne_B.fit_transform(B_vectors)
+    
+    # Plot B vectors with same coloring
+    for label in labels_for_plot:  # Plot dead first so alive points appear on top
+        mask = labels_A == label
+        ax2.scatter(B_embedded[mask, 0], B_embedded[mask, 1], 
+                   label=label, alpha=0.6, s=50, c=colors[label])
+    
+    ax2.set_title(f't-SNE of B vectors (rows) - {layer_name}', fontsize=14)
+    ax2.set_xlabel('t-SNE dimension 1')
+    ax2.set_ylabel('t-SNE dimension 2')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    # Add to figure dictionary
+    fig_dict[f"tsne/{layer_name}_ab_vectors_{perplexity}"] = fig_ab
+    
+    # Additional plot: Show frequency distribution for alive components
+    if alive_mask.sum() > 0:
+        fig_freq, (ax3, ax4) = plt.subplots(1, 2, figsize=(12, 6))
+        alive_frequencies = frequencies[alive_mask].cpu().numpy()
+        
+        # Frequency histogram
+        ax3.hist(alive_frequencies, bins=30, alpha=0.7, color='blue', edgecolor='black')
+        ax3.set_title('Frequency Distribution of Alive Components')
+        ax3.set_xlabel('Frequency (CI >= 0.1)')
+        ax3.set_ylabel('Count')
+        
+        # Frequency-colored scatter plot
+        scatter = ax4.scatter(A_embedded[alive_mask.cpu().numpy(), 0], 
+                            A_embedded[alive_mask.cpu().numpy(), 1],
+                            c=alive_frequencies, cmap='viridis', s=50, alpha=0.7)
+        plt.colorbar(scatter, ax=ax4, label='Frequency')
+        ax4.set_title('t-SNE of Alive A vectors colored by frequency')
+        ax4.set_xlabel('t-SNE dimension 1')
+        ax4.set_ylabel('t-SNE dimension 2')
+        
+        plt.tight_layout()
+        
+        # Add to figure dictionary
+        fig_dict[f"tsne/{layer_name}_alive_frequency_{perplexity}"] = fig_freq
+    
+    return fig_dict, A_embedded, B_embedded, labels_A
+
 
 
 def permute_to_identity(

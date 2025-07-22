@@ -206,6 +206,10 @@ class Config(BaseModel):
         default=None,
         description="Coefficient for recon loss with a causal importance mask",
     )
+    filler_recon_coeff: NonNegativeFloat | None = Field(
+        default=None,
+        description="Coefficient for recon loss with a filler component",
+    )
     clamped_recon_coeff: NonNegativeFloat | None = Field(
         default=None,
         description="Coefficient for recon loss with a clamped causal importance mask",
@@ -239,6 +243,23 @@ class Config(BaseModel):
         description="Metric used to measure recon error between model outputs and targets",
     )
 
+    # --- Alternative to Stochastic ----
+    learned_filler_comp: bool = Field(
+        default=False,
+        description="If True, use a learned filler component to reconstruct the output",
+    )
+    remove_dead_components: bool = Field(
+        default=False,
+        description="If True, remove dead components from the model",
+    )
+    max_filler_scalar: float = Field(
+        default=1.0,
+        description="Maximum scalar value for the filler component",
+    )
+    init_filler_comp_to_residual: bool = Field(
+        default=False,
+        description="If True, initialize the filler component to be the residual of the target weight",
+    )
     # --- Regularisation ---
     faithfulness_scale: Literal["rms"] | None = Field(
         default=None,
@@ -278,6 +299,10 @@ class Config(BaseModel):
     print_freq: PositiveInt = Field(
         ...,
         description="Interval (in steps) at which to print training metrics to stdout",
+    )
+    check_dead_components_freq: PositiveInt | None = Field(
+        default=None,
+        description="Interval (in steps) at which to check for dead components",
     )
     save_freq: PositiveInt | None = Field(
         default=None,

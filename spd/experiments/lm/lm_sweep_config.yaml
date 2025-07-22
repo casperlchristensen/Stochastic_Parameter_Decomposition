@@ -4,18 +4,49 @@ metric:
   name: total_loss
   goal: minimize
 parameters:
+  # learned_filler_comp:
+  #   values: [True, False]
+  # remove_dead_components:
+  #   values: [True, False]
+  # Conditionaly on learned filler comp being true, we do max filler scaler
+  
+  # all_components_recon_coeff:
+  #   values: [10, 1, 1e-1]
+  pnorm:
+    values: [0.2, 0.5, 1.0, 2.0]
+  
+  # init_filler_comp_to_residual:
+  #   values: [False]
+  #   values: [8e-3]
+  # C: 
+  #   values: [2000]
+  # clamped_recon_coeff:
+  #   values: [3, 1e-2]
+  # stochastic_recon_coeff:
+  #   values: [0.0, 1.0]
+  # filler_recon_coeff:
+  #   values: [1.0, 1e-2]
+  importance_minimality_coeff:
+    values: [3e-2, 8e-3]
+  all_components_recon_coeff:
+    values: [8e-1, 8e-2]
+  faithfulness_coeff:
+    values: [30, 1e-2]
+  # filler_recon_coeff:
+  #   values: [1.0, 1e-1]
   seed:
     values: [0]
-  lr:
-    values: [2e-3, 1e-3, 3e-4, 1e-4]
+  # steps:
+  #   values: [50000]
+  # lr:
+  #   values: [3e-4,  8e-5]
   # stochastic_recon_layerwise_coeff:
   #   values: [1e-1]
   # embedding_recon_coeff:
   #   values: [1, 1e-2, 1e-4]
 
-
 command:
 - ${env}
 - ${interpreter}
 - ${program}
-- spd/experiments/lm/ss_config.yaml # Runs simplestories
+- spd/experiments/lm/lm_config.yaml # Runs simplestories

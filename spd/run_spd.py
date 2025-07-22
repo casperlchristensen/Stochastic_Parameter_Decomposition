@@ -5,6 +5,7 @@ from functools import partial
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from regex import T
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -34,6 +35,8 @@ from spd.plotting import (
     plot_ci_histograms,
     plot_mean_component_activation_counts,
     plot_causal_importance_feature_frequencies,
+    visualize_ab_vectors,
+    plot_all_cos_sims,
 )
 from spd.utils import (
     calc_kl_divergence_lm,
@@ -105,6 +108,7 @@ def optimize(
         C=config.C,
         gate_config=config.gate_config,
         pretrained_model_output_attr=config.pretrained_model_output_attr,
+        filler_comp_bool=config.learned_filler_comp,
     )
 
     for param in target_model.parameters():
@@ -149,6 +153,22 @@ def optimize(
         for src_name, tgt_name in tied_weights:
             components[tgt_name].B.data = components[src_name].A.data.T
             components[tgt_name].A.data = components[src_name].B.data.T
+
+
+    # Initialize the filler comp weight to be the residual of the weight
+    if config.learned_filler_comp:
+        if(config.init_filler_comp_to_residual):
+            with torch.no_grad():
+                for comp_name, component in model.components.items():
+                    component_params = component.weight
+
+                    submodule = target_model.get_submodule(comp_name.replace("-", "."))
+                    assert isinstance(submodule, nn.Linear | nn.Embedding)
+                    target_params = submodule.weight
+
+                    diff = target_params - component_params
+                    # initialize the filler comp weight to be the residual of the weight
+                    component.filler_comp_weight.data = diff.T
 
     component_params: list[torch.nn.Parameter] = []
     gate_params: list[torch.nn.Parameter] = []
@@ -247,6 +267,48 @@ def optimize(
         log_data.update(loss_terms)
 
         with torch.inference_mode():
+            if step > 0 and step % config.check_dead_components_freq == 0:
+                dead_fig_dict = {}
+                for layer_name, layer_alive_components in alive_components.items():
+                    log_data[f"{layer_name}/n_alive_01"] = layer_alive_components.sum().item()
+                    # I think we want to remove components that are not alive (or very infrequent)
+                    # dead_components = ~layer_alive_components
+                    # I'm unsure how to remove components in general. Maybe set to zero, set requires_grad to false? 
+                    # For computation sake, it'd be better to just remove it, but will mess up indexing for other ones. 
+                    # Maybe not since we're zero-ing out the alive components afterwards
+                    if config.remove_dead_components:
+                        dead_components = ~layer_alive_components
+                        num_removed = dead_components.sum().item()
+                        # print(f"\nRemoving {num_removed} components from {layer_name}")
+                        components[layer_name].A.data[:, dead_components] = 0
+                        components[layer_name].B.data[dead_components, :] = 0
+                        # clear the current grad
+                        log_data[f"{layer_name}/removed_components"] = num_removed
+
+                # for layer_name, ci in causal_importances.items():
+                    # ci = causal_importances[layer_name]
+                    # Needs to be .items() related
+                    alive_mask = layer_alive_components 
+
+                    fig_corr, fig_hist = plot_all_cos_sims(components, ci, layer_name, alive_mask, config, log_data)
+                    dead_fig_dict[f"cos_sim/{layer_name}_correlation_matrix_full"] = fig_corr
+                    dead_fig_dict[f"cos_sim/{layer_name}_cosine_similarity_histograms_full"] = fig_hist
+
+                    # Also do TNSE
+                    # for perplexity in [10, 15, 20, 25]:
+                    for perplexity in [10, 25, 40]:
+                        print(f"Doing TNSE for {layer_name}")
+                        layer_figs, _, _, _ = visualize_ab_vectors(components, ci, layer_name, alive_mask=alive_mask, config=config, perplexity=perplexity, n_iter=5000)
+                        print(f"TNSE done for {layer_name}")
+                        dead_fig_dict.update(layer_figs)
+                    alive_components[layer_name] = torch.zeros(config.C, device=device).bool()
+                
+                if config.wandb_project:
+                    wandb.log(
+                        {k: wandb.Image(v) for k, v in dead_fig_dict.items()},
+                        step=step,
+                    )
+
             # --- Logging --- #
             if step % config.print_freq == 0:
                 tqdm.write(f"--- Step {step} ---")
@@ -256,25 +318,26 @@ def optimize(
                 for name, value in loss_terms.items():
                     tqdm.write(f"{name}: {value:.7f}")
 
-                if step > 0:
-                    for layer_name, layer_alive_components in alive_components.items():
-                        log_data[f"{layer_name}/n_alive_01"] = layer_alive_components.sum().item()
-                        alive_components[layer_name] = torch.zeros(config.C, device=device).bool()
+                # TODO Replace w/ a function that calculate both KL, CE-diff, etc, just given the masks
+                # Would need to initially compute the CE & Logits for original model
 
+                
                 # Calculate component logits and KL losses
                 masked_component_logits = model.forward_with_components(
-                    batch, components=components, masks=causal_importances
+                    batch, components=components, masks=causal_importances, filler_comp_scalar=0.0,
                 )
                 ones_masks = {k: torch.ones_like(v) for k, v in causal_importances.items()}
                 all_components_logits = model.forward_with_components(
-                    batch, components=components, masks=ones_masks
+                    batch, components=components, masks=ones_masks, filler_comp_scalar=1.0,
                 )
+
+                
                 # stochastic
                 stochastic_masks = calc_stochastic_masks(
                     causal_importances=causal_importances, n_mask_samples=config.n_mask_samples
                 )[0]
                 stochastic_component_logits = model.forward_with_components(
-                    batch, components=components, masks=stochastic_masks
+                    batch, components=components, masks=stochastic_masks, filler_comp_scalar=0.0,
                 )
 
                 target_logits = model(batch)
@@ -296,6 +359,79 @@ def optimize(
                 log_data["misc/clamped_kl_loss_vs_target"] = calc_kl_divergence_lm(
                     pred=clamped_masked_component_logits, target=target_logits
                 ).item()
+                if config.learned_filler_comp:
+                    # Evaluate Clamped loss w/ & w/o Filler added   
+                    clamped_masked_component_logits_no_filler = model.forward_with_components(
+                        batch, components=components, masks=clamped_masks, filler_comp_scalar=0.0
+                    )
+                    clamped_masked_component_logits_filler = model.forward_with_components(
+                        batch, components=components, masks=clamped_masks, filler_comp_scalar=1.0,
+                    )
+                    clamped_masked_component_logits_filler_max = model.forward_with_components(
+                        batch, components=components, masks=clamped_masks, filler_comp_scalar=config.max_filler_scalar,
+                    )
+                    clamped_no_filler_kl_loss = calc_kl_divergence_lm(
+                        pred=clamped_masked_component_logits_no_filler, target=target_logits
+                    ).item()
+                    clamped_filler_kl_loss = calc_kl_divergence_lm(
+                        pred=clamped_masked_component_logits_filler, target=target_logits
+                    ).item()
+                    clamped_filler_max_kl_loss = calc_kl_divergence_lm(
+                        pred=clamped_masked_component_logits_filler_max, target=target_logits
+                    ).item()
+                    clamped_filler_diff =  clamped_filler_kl_loss - clamped_no_filler_kl_loss
+                    log_data["filler/clamped_kl_NO_filler"] = clamped_no_filler_kl_loss
+                    log_data["filler/clamped_kl_WITH_filler"] = clamped_filler_kl_loss
+                    log_data["filler/clamped_kl_diff_(~0 is better)"] = clamped_filler_diff
+                    log_data["filler/clamped_kl_WITH_filler_MAX"] = clamped_filler_max_kl_loss
+                    log_data["filler/clamped_kl_WITH_filler_MAX_diff_(~0 is better)"] = clamped_filler_max_kl_loss - clamped_no_filler_kl_loss
+
+
+                    # Repeat for 1's mask
+                    ones_masked_component_logits_no_filler = model.forward_with_components(
+                        batch, components=components, masks=ones_masks, filler_comp_scalar=0.0
+                    )
+                    ones_masked_component_logits_filler = model.forward_with_components(
+                        batch, components=components, masks=ones_masks, filler_comp_scalar=1.0,
+                    )
+                    ones_no_filler_kl_loss = calc_kl_divergence_lm(
+                        pred=ones_masked_component_logits_no_filler, target=target_logits
+                    ).item()
+                    ones_filler_kl_loss = calc_kl_divergence_lm(
+                        pred=ones_masked_component_logits_filler, target=target_logits
+                    ).item()
+                    ones_filler_diff = ones_no_filler_kl_loss - ones_filler_kl_loss
+                    log_data["filler/ones_kl_NO_filler"] = ones_no_filler_kl_loss
+                    log_data["filler/ones_kl_WITH_filler"] = ones_filler_kl_loss
+                    log_data["filler/ones_kl_diff_(higher_is_better)"] = ones_filler_diff
+
+
+                    for comp_name, component in model.components.items():
+                        component_params = component.weight
+
+                        submodule = target_model.get_submodule(comp_name.replace("-", "."))
+                        assert isinstance(submodule, nn.Linear | nn.Embedding)
+                        target_params = submodule.weight
+                # submodule = target_model.get_submodule(comp_name.replace("-", "."))
+
+                        no_filler_diff = ((target_params - component_params)**2).sum() / component_params.numel()
+                        filler_diff = ((target_params - (component_params + component.filler_comp_weight.T))**2).sum() / component_params.numel()  
+                        log_data[f"filler/faithfulness{comp_name}_no_filler"] = no_filler_diff
+                        log_data[f"filler/faithfulness{comp_name}_filler"] = filler_diff
+                        log_data[f"filler/faithfulness{comp_name}_filler_diff_(higher_is_better)"] =  no_filler_diff - filler_diff
+
+                    # log_data["filler/ones_kl_loss_vs_target_no_filler"] = calc_kl_divergence_lm(
+                    #     pred=ones_masked_component_logits_no_filler, target=target_logits
+                    # ).item()
+                    # log_data["filler/ones_kl_loss_vs_target_filler"] = calc_kl_divergence_lm(
+                    #     pred=ones_masked_component_logits_filler, target=target_logits
+                    # ).item()
+
+
+                    # Also log the norm of the filler_comp for our linear cmoponent 
+                    for layer_name, component in components.items():
+                        if component.filler_comp_bool:
+                            log_data[f"filler/norm_filler_comp_{layer_name}"] = component.filler_comp_weight.norm().item()
                 # binned mask (do bin_num = 10)
                 bin_num = 5
                 # Bin the masks to nearest fraction (e.g., bin_num=10 -> 0.0, 0.1, 0.2, ..., 1.0)
@@ -409,6 +545,90 @@ def optimize(
                 )
                 fig_dict.update(ci_feature_freq_figs)
 
+        
+                # # Now check cos-sim of A & B. We want AxA & BxB and AxB
+                # # Would be great to color by frequency
+                # for layer_name, ci in causal_importances.items():
+                #     frequencies = (ci >= 0.1).float().mean(dim=(0, 1))
+                #     # dead are set to zero
+                #     # dead_mask = components[layer_name].A.sum(dim=0) == 0
+                #     alive_mask = components[layer_name].A.sum(dim=0) > 0
+                #     A_alive = components[layer_name].A[:, alive_mask]
+                #     B_alive = components[layer_name].B[alive_mask, :]
+                #     alive_frequencies = frequencies[alive_mask].cpu().numpy()
+                #     print(f" Freq shape: {frequencies.shape}, alive_frequencies shape: {alive_frequencies.shape}")
+                #     print(f" a alive shape: {A_alive.shape}, b alive shape: {B_alive.shape}")
+                #     print(f" alive mask shape: {alive_mask.shape}")
+                #     print(f" Num Alive: {alive_mask.sum().item()}")
+
+                #     # Now we want to do the same for the dead components
+                #     normed_A = torch.nn.functional.normalize(A_alive, dim=0)  # [d_model, n_components]
+                #     normed_B = torch.nn.functional.normalize(B_alive, dim=1)  # [n_components, d_out]
+                #     aa_cos_sim = (normed_A.T @ normed_A).tril(diagonal=-1) # shape (C, C)
+                #     bb_cos_sim = (normed_B @ normed_B.T).tril(diagonal=-1) # shape (C, C)
+                #     print(f" aa cos sim shape: {aa_cos_sim.shape}, bb cos sim shape: {bb_cos_sim.shape}")
+                    
+                #     # Find the max & min for each comp
+                #     aa_max = aa_cos_sim.max(dim=0).values
+                #     aa_min = aa_cos_sim.min(dim=0).values
+                #     bb_max = bb_cos_sim.max(dim=0).values
+                #     bb_min = bb_cos_sim.min(dim=0).values
+
+                #     log_data[f"cos_sim/{layer_name}_aa_max_mean"] = aa_max.mean().item()
+                #     log_data[f"cos_sim/{layer_name}_aa_min_mean"] = aa_min.mean().item()
+                #     log_data[f"cos_sim/{layer_name}_bb_max_mean"] = bb_max.mean().item()
+                #     log_data[f"cos_sim/{layer_name}_bb_min_mean"] = bb_min.mean().item()
+                #     aa_max = aa_max.cpu().numpy()
+                #     aa_min = aa_min.cpu().numpy()
+                #     bb_max = bb_max.cpu().numpy()
+                #     bb_min = bb_min.cpu().numpy()
+
+
+                #     # Now we want the scatter plot of all combos 
+                #     # Let's create names so we can loop & do it automatically, w/ below as example
+                #     cos_sim_names = ["aa_max", "aa_min", "bb_max", "bb_min"]
+                #     temp_fig_dict = {}
+                #     for i in range(len(cos_sim_names)):
+                #         for j in range(i+1, len(cos_sim_names)):
+                #             cos_sim_name_i = cos_sim_names[i]
+                #             cos_sim_name_j = cos_sim_names[j]
+                #             fig, ax = plt.subplots(figsize=(10, 6))
+
+                #             # Get the appropriate data based on the names
+                #             data_i = locals()[cos_sim_name_i]  # This gets aa_max, aa_min, etc.
+                #             data_j = locals()[cos_sim_name_j]
+
+                #             # Set colorbar limits based on whether it's min or max
+                #             if "min" in cos_sim_name_j:
+                #                 vmin, vmax = -1, 0
+                #             else:
+                #                 vmin, vmax = 0, 1
+                            
+                #             scatter = ax.scatter(alive_frequencies, data_i, c=data_j, cmap="viridis", alpha=0.5, 
+                #                             vmin=vmin, vmax=vmax)         
+                #             # Add colorbar with label
+                #             cbar = plt.colorbar(scatter, ax=ax)
+                #             cbar.set_label(f"{cos_sim_name_j}", rotation=270, labelpad=20)
+                            
+                #             ax.set_xlabel("Frequency (log scale)")
+                #             ax.set_ylabel(f"{cos_sim_name_i}")
+                #             ax.set_xscale('log')  # Set x-axis to log scale
+                            
+                #             # Set y limits based on whether it's min or max
+                #             if "min" in cos_sim_name_i:
+                #                 ax.set_ylim(-1, 0)
+                #             else:
+                #                 ax.set_ylim(0, 1)
+                                
+                #             ax.set_title(f"Frequency vs {cos_sim_name_i} (colored by {cos_sim_name_j})")
+                            
+                #             temp_fig_dict[f"cos_sim/{layer_name}_freq_vs_{cos_sim_name_i}_colored_by_{cos_sim_name_j}"] = fig
+                            
+                #     fig_dict.update(temp_fig_dict)
+
+          
+
+
                 mean_component_activation_counts = component_activation_statistics(
                     model=model, dataloader=eval_loader, n_steps=n_eval_steps, device=device, input_key=input_key
                 )[1]
@@ -424,10 +644,10 @@ def optimize(
                         {k: wandb.Image(v) for k, v in fig_dict.items()},
                         step=step,
                     )
-                    if out_dir is not None:
-                        for k, v in fig_dict.items():
-                            v.savefig(out_dir / f"{k}_{step}.png")
-                            tqdm.write(f"Saved plot to {out_dir / f'{k}_{step}.png'}")
+                    # if out_dir is not None:
+                    #     for k, v in fig_dict.items():
+                    #         v.savefig(out_dir / f"{k}_{step}.png")
+                    #         tqdm.write(f"Saved plot to {out_dir / f'{k}_{step}.png'}")
 
         # --- Saving Checkpoint --- #
         if (

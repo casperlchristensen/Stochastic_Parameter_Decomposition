@@ -119,16 +119,26 @@ class LinearComponent(nn.Module):
     The weight matrix W is decomposed as W = B^T @ A^T, where A and B are learned parameters.
     """
 
-    def __init__(self, d_in: int, d_out: int, C: int, bias: Tensor | None):
+    def __init__(self, d_in: int, d_out: int, C: int, bias: Tensor | None, filler_comp_bool: bool = False, max_filler_scalar: float = 1.0):
         super().__init__()
         self.C = C
 
         self.A = nn.Parameter(torch.empty(d_in, C))
         self.B = nn.Parameter(torch.empty(C, d_out))
         self.bias = bias
-
+        self.filler_comp_bool = filler_comp_bool
+        
         init_param_(self.A, fan_val=d_out, nonlinearity="linear")
         init_param_(self.B, fan_val=C, nonlinearity="linear")
+
+        if self.filler_comp_bool:
+            self.filler_comp_weight = nn.Parameter(torch.empty(d_in, d_out))
+            nn.init.xavier_uniform_(self.filler_comp_weight)
+            self.filler_comp_weight.data = self.filler_comp_weight.data / 5
+        else:
+            self.filler_comp_weight = None
+        self.filler_comp_scalar: float | None = None
+        self.max_filler_scalar: float = max_filler_scalar
 
         self.mask: Float[Tensor, "... C"] | None = None  # Gets set on sparse forward passes
 
@@ -153,6 +163,21 @@ class LinearComponent(nn.Module):
             component_acts *= self.mask
 
         out = einops.einsum(component_acts, self.B, "... C, C d_out -> ... d_out")
+
+
+        if self.filler_comp_bool:
+            # randomly scale filler comp between 0 and 1
+            if self.filler_comp_scalar is None:
+                rand_scalar = torch.rand(1, device=x.device) * self.max_filler_scalar 
+            else:
+                rand_scalar = self.filler_comp_scalar
+            # Perform matrix multiplication: x @ filler_comp_weight.T
+            filler_comp_output = einops.einsum(
+                x, self.filler_comp_weight*rand_scalar, "... d_in, d_in d_out -> ... d_out"
+            )
+            # Add the scaled filler component output to the final output
+            out += filler_comp_output
+            print(" We are filler comp adding! specifically adding scalar ", rand_scalar)
 
         if self.bias is not None:
             out += self.bias

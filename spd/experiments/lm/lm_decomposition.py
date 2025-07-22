@@ -73,16 +73,22 @@ def main(config_path_or_obj: Path | str | Config) -> None:
     )
 
     # --- Setup Run Name and Output Dir --- #
-    run_name = get_run_name(
-        config,
-        pretrained_model_name=config.pretrained_model_name_hf,
-        max_seq_len=config.task_config.max_seq_len,
-    )
-    if config.wandb_project:
-        assert wandb.run, "wandb.run must be initialized before training"
-        wandb.run.name = run_name
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-    out_dir = Path(__file__).parent / "out" / f"{run_name}_{timestamp}"
+    # run_name = get_run_name(
+    #     config,
+    #     pretrained_model_name=config.pretrained_model_name_hf,
+    #     max_seq_len=config.task_config.max_seq_len,
+    # )
+    # if config.wandb_project:
+    #     assert wandb.run, "wandb.run must be initialized before training"
+    #     wandb.run.name = run_name
+    # run_name = f"pnorm={config.pnorm}_C={config.C}_lr={config.lr}
+    # run_name = f"pnorm={config.pnorm}_C={config.C}_min={config.importance_minimality_coeff}_lr={config.lr}"
+    # run_name = f"clamp={config.clamped_recon_coeff:.1e}_all={config.all_components_recon_coeff:.1e}_fill={config.learned_filler_comp}_rem_ded={config.remove_dead_components}_fil_scalar={config.max_filler_scalar}_faith={config.faithfulness_coeff}"
+    # run_name = f"p={config.pnorm}_min={config.importance_minimality_coeff:.1e}_all={config.all_components_recon_coeff:.1e}_faith={config.faithfulness_coeff}"
+    run_name = f"no_stoch"
+    wandb.run.name = run_name
+    # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    out_dir = Path(__file__).parent / "out" / f"{run_name}"
     out_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {out_dir}")
 

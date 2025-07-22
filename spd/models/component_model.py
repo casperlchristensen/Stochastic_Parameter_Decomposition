@@ -35,11 +35,17 @@ class ComponentModel(nn.Module):
         C: int,
         pretrained_model_output_attr: str | None,
         gate_config: GraphGateConfig | GateMLPConfig,
+        filler_comp_bool: bool = False,
+        max_filler_scalar: float = 1.0,
     ):
         super().__init__()
         self.model = base_model
         self.C = C
         self.pretrained_model_output_attr = pretrained_model_output_attr
+        self.filler_comp_bool = filler_comp_bool
+        self.max_filler_scalar = max_filler_scalar
+        print(f"Filler comp: {self.filler_comp_bool}")
+
         self.components = self.create_target_components(
             target_module_patterns=target_module_patterns, C=C
         )
@@ -62,7 +68,6 @@ class ComponentModel(nn.Module):
                 gate_kwargs["n_ci_mlp_neurons"] = gate_config.n_ci_mlp_neurons 
 
             self.gates = nn.ModuleDict({name: gate_class(**gate_kwargs) for name in self.components})
-
     def create_target_components(self, target_module_patterns: list[str], C: int) -> nn.ModuleDict:
         """Create target components for the model."""
         components: dict[str, LinearComponent | EmbeddingComponent] = {}
@@ -76,7 +81,8 @@ class ComponentModel(nn.Module):
                         d_out, d_in = module.weight.shape
                         # Replace "." with "-" in the name to avoid issues with module dict keys
                         components[name.replace(".", "-")] = LinearComponent(
-                            d_in=d_in, d_out=d_out, C=C, bias=module.bias
+                            d_in=d_in, d_out=d_out, C=C, bias=module.bias, filler_comp_bool=self.filler_comp_bool,
+                            max_filler_scalar=self.max_filler_scalar,
                         )
                     elif isinstance(module, nn.Embedding):
                         components[name.replace(".", "-")] = EmbeddingComponent(
@@ -131,6 +137,7 @@ class ComponentModel(nn.Module):
         components: Mapping[str, LinearComponent | EmbeddingComponent],
         masks: dict[str, Float[Tensor, "... C"]] | None = None,
         mask_lower_bound: float | None = 0.0,
+        filler_comp_scalar: float | None = None,
     ):
         """Context manager for temporarily replacing modules with components.
 
@@ -152,7 +159,8 @@ class ComponentModel(nn.Module):
                 component.mask = masks[module_name]
                 if mask_lower_bound is not None:
                     component.mask = torch.clamp(component.mask, min=mask_lower_bound)
-
+            if self.filler_comp_bool:
+                component.filler_comp_scalar = filler_comp_scalar
             # Replace module
             self.model.set_submodule(module_name, component)
 
@@ -165,6 +173,8 @@ class ComponentModel(nn.Module):
 
             # Clear masks from all components
             for component in components.values():
+                if self.filler_comp_bool:
+                    component.filler_comp_scalar = None
                 component.mask = None
 
     def forward_with_components(
@@ -173,6 +183,7 @@ class ComponentModel(nn.Module):
         components: dict[str, LinearComponent | EmbeddingComponent],
         masks: dict[str, Float[Tensor, "... C"]] | None = None,
         mask_lower_bound: float | None = 0.0,
+        filler_comp_scalar: float | None = None,
         **kwargs: Any,
     ) -> Any:
         """Forward pass with temporary component replacements.
@@ -181,7 +192,7 @@ class ComponentModel(nn.Module):
             components: Dictionary mapping component names to components
             masks: Optional dictionary mapping component names to masks
         """
-        with self._replaced_modules(components, masks, mask_lower_bound):
+        with self._replaced_modules(components, masks, mask_lower_bound, filler_comp_scalar=filler_comp_scalar):
             return self(*args, **kwargs)
 
     def forward_with_pre_forward_cache_hooks(
@@ -280,6 +291,7 @@ class ComponentModel(nn.Module):
             C=config.C,
             gate_config=gate_config,
             pretrained_model_output_attr=config.pretrained_model_output_attr,
+            filler_comp_bool=config.learned_filler_comp,
         )
         comp_model.load_state_dict(model_weights)
         return comp_model, config, out_dir

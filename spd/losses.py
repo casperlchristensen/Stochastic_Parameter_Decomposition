@@ -211,10 +211,13 @@ def calc_faithfulness_loss(
     scalers_params: dict[str, Float[Tensor, ""]] = {}
 
     for comp_name, component in components.items():
-        component_params[comp_name] = component.weight
         submodule = target_model.get_submodule(comp_name)
         assert isinstance(submodule, nn.Linear | nn.Embedding)
         target_params[comp_name] = submodule.weight
+        component_params[comp_name] = component.weight
+        if component.filler_comp_bool:
+            print("adding filler comp weight")
+            component_params[comp_name] += component.filler_comp_weight.T
         scalers_params[comp_name] = scale_fn(
             submodule.weight
         )
@@ -461,30 +464,41 @@ def calculate_losses(
 
     # Reconstruction loss
     if config.recon_coeff is not None:
-        recon_loss = calc_masked_recon_loss(
-            model=model,
-            batch=batch,
-            components=components,
-            masks=causal_importances,
-            target_out=target_out,
-            loss_type=config.output_loss_type,
-        )
-        total_loss += config.recon_coeff * recon_loss
-        loss_terms["loss/recon"] = recon_loss.item()
+            recon_loss = calc_masked_recon_loss(
+                model=model,
+                batch=batch,
+                components=components,
+                masks=causal_importances,
+                target_out=target_out,
+                loss_type=config.output_loss_type,
+            )
+            total_loss += config.recon_coeff * recon_loss
+            loss_terms["loss/recon"] = recon_loss.item()
 
     # Clamped reconstruction loss
     if config.clamped_recon_coeff is not None:
         clamped_masks = {k: torch.clamp(v, min=0, max=1) for k, v in causal_importances.items()}
-        clamped_recon_loss = calc_masked_recon_loss(
-            model=model,
-            batch=batch,
-            components=components,
-            masks=clamped_masks,
-            target_out=target_out,  
-            loss_type=config.output_loss_type,
-        )
-        total_loss += config.clamped_recon_coeff * clamped_recon_loss
-        loss_terms["loss/clamped_recon"] = clamped_recon_loss.item()
+        if config.filler_recon_coeff is not None and config.learned_filler_comp:
+            # Then we need to do Recon no Filler as target, & Recon with Filler as KL w/ no-filler
+            masked_logits = model.forward_with_components(batch, components=components, masks=clamped_masks, filler_comp_scalar=0)
+            masked_logits_with_filler = model.forward_with_components(batch, components=components, masks=clamped_masks, filler_comp_scalar=1)
+            clamped_recon_loss = calc_kl_divergence_lm(pred=masked_logits, target=target_out)
+            clamped_recon_loss_with_filler = calc_kl_divergence_lm(pred=masked_logits_with_filler, target=masked_logits)
+            total_loss += config.clamped_recon_coeff * clamped_recon_loss
+            total_loss += config.filler_recon_coeff * clamped_recon_loss_with_filler
+            loss_terms["loss/clamped_recon"] = clamped_recon_loss.item()
+            loss_terms["loss/clamped_recon_filler_kl"] = clamped_recon_loss_with_filler.item()
+        else:
+            clamped_recon_loss = calc_masked_recon_loss(
+                model=model,
+                batch=batch,
+                components=components,
+                masks=clamped_masks,
+                target_out=target_out,  
+                loss_type=config.output_loss_type,
+            )
+            total_loss += config.clamped_recon_coeff * clamped_recon_loss
+            loss_terms["loss/clamped_recon"] = clamped_recon_loss.item()
 
     
     # Stochastic reconstruction loss
@@ -494,14 +508,19 @@ def calculate_losses(
         )
         stochastic_recon_loss = torch.tensor(0.0, device=target_out.device)
         for i in range(len(stochastic_masks)):
-            stochastic_recon_loss += calc_masked_recon_loss(
-                model=model,
-                batch=batch,
-                components=components,
-                masks=stochastic_masks[i],
-                target_out=target_out,
-                loss_type=config.output_loss_type,
-            )
+            if config.learned_filler_comp:
+                stochastic_masks[i] = {k: torch.clamp(v, min=0, max=1) for k, v in stochastic_masks[i].items()}
+                masked_logits_with_filler = model.forward_with_components(batch, components=components, masks=stochastic_masks[i], filler_comp_scalar=1)
+                stochastic_recon_loss += calc_kl_divergence_lm(pred=masked_logits_with_filler, target=target_out)
+            else:  
+                stochastic_recon_loss += calc_masked_recon_loss(
+                    model=model,
+                    batch=batch,
+                    components=components,
+                    masks=stochastic_masks[i],
+                    target_out=target_out,
+                    loss_type=config.output_loss_type,
+                )
         stochastic_recon_loss = stochastic_recon_loss / len(stochastic_masks)
         total_loss += config.stochastic_recon_coeff * stochastic_recon_loss
         loss_terms["loss/stochastic_recon"] = stochastic_recon_loss.item()
@@ -558,16 +577,22 @@ def calculate_losses(
     # Output reconstruction loss
     if config.all_components_recon_coeff is not None:
         masks_all_ones = {k: torch.ones_like(v) for k, v in causal_importances.items()}
-        out_recon_loss = calc_masked_recon_loss(
-            model=model,
-            batch=batch,
-            components=components,
-            masks=masks_all_ones,
-            target_out=target_out,
-            loss_type=config.output_loss_type,
-        )
-        total_loss += config.all_components_recon_coeff * out_recon_loss
-        loss_terms["loss/all_components_recon"] = out_recon_loss.item()
+        if config.learned_filler_comp:
+            all_ones_logits = model.forward_with_components(batch, components=components, masks=masks_all_ones, filler_comp_scalar=1)
+            out_recon_loss = calc_kl_divergence_lm(pred=all_ones_logits, target=target_out)
+            total_loss += config.all_components_recon_coeff * out_recon_loss
+            loss_terms["loss/all_components_recon"] = out_recon_loss.item()
+        else:
+            out_recon_loss = calc_masked_recon_loss(
+                model=model,
+                batch=batch,
+                components=components,
+                masks=masks_all_ones,
+                target_out=target_out,
+                loss_type=config.output_loss_type,
+            )
+            total_loss += config.all_components_recon_coeff * out_recon_loss
+            loss_terms["loss/all_components_recon"] = out_recon_loss.item()
 
     # Embedding reconstruction loss
     if config.embedding_recon_coeff is not None:
