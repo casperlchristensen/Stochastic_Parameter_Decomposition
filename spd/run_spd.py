@@ -318,11 +318,9 @@ def optimize(
                 for name, value in loss_terms.items():
                     tqdm.write(f"{name}: {value:.7f}")
 
-                # TODO Replace w/ a function that calculate both KL, CE-diff, etc, just given the masks
-                # Would need to initially compute the CE & Logits for original model
 
-                
-                # Calculate component logits and KL losses
+                target_logits = model(batch)
+
                 masked_component_logits = model.forward_with_components(
                     batch, components=components, masks=causal_importances, filler_comp_scalar=0.0,
                 )
@@ -330,55 +328,54 @@ def optimize(
                 all_components_logits = model.forward_with_components(
                     batch, components=components, masks=ones_masks, filler_comp_scalar=1.0,
                 )
-
-                
                 # stochastic
                 stochastic_masks = calc_stochastic_masks(
                     causal_importances=causal_importances, n_mask_samples=config.n_mask_samples
                 )[0]
                 stochastic_component_logits = model.forward_with_components(
-                    batch, components=components, masks=stochastic_masks, filler_comp_scalar=0.0,
-                )
-
-                target_logits = model(batch)
-
-                log_data["misc/all_components_kl_loss_vs_target"] = calc_kl_divergence_lm(
-                    pred=all_components_logits, target=target_logits
-                ).item()
-                log_data["misc/masked_kl_loss_vs_target"] = calc_kl_divergence_lm(
-                    pred=masked_component_logits, target=target_logits
-                ).item()
-                log_data["misc/stochastic_kl_loss_vs_target"] = calc_kl_divergence_lm(
-                    pred=stochastic_component_logits, target=target_logits
-                ).item()
-                # clamped_mask
+                    batch, components=components, masks=stochastic_masks, filler_comp_scalar=0.0, )
                 clamped_masks = {k: v.clamp(0, 1) for k, v in causal_importances.items()}
                 clamped_masked_component_logits = model.forward_with_components(
-                    batch, components=components, masks=clamped_masks
+                    batch, components=components, masks=clamped_masks, filler_comp_scalar=0.0,
                 )
-                log_data["misc/clamped_kl_loss_vs_target"] = calc_kl_divergence_lm(
+
+                # Calculate KL losses
+                all_components_kl = calc_kl_divergence_lm(
+                    pred=all_components_logits, target=target_logits
+                ).item()
+                masked_kl = calc_kl_divergence_lm(
+                    pred=masked_component_logits, target=target_logits
+                ).item()
+                stochastic_kl = calc_kl_divergence_lm(
+                    pred=stochastic_component_logits, target=target_logits
+                ).item()
+                clamped_kl = calc_kl_divergence_lm(
                     pred=clamped_masked_component_logits, target=target_logits
                 ).item()
+
+
+                log_data["misc/all_components_kl_loss_vs_target"] = all_components_kl
+                log_data["misc/masked_kl_loss_vs_target"] = masked_kl
+                log_data["misc/stochastic_kl_loss_vs_target"] = stochastic_kl
+                log_data["misc/clamped_kl_loss_vs_target"] = clamped_kl
                 if config.learned_filler_comp:
                     # Evaluate Clamped loss w/ & w/o Filler added   
-                    clamped_masked_component_logits_no_filler = model.forward_with_components(
-                        batch, components=components, masks=clamped_masks, filler_comp_scalar=0.0
-                    )
+                    # clamped_masked_component_logits_no_filler = cla
                     clamped_masked_component_logits_filler = model.forward_with_components(
                         batch, components=components, masks=clamped_masks, filler_comp_scalar=1.0,
                     )
                     clamped_masked_component_logits_filler_max = model.forward_with_components(
                         batch, components=components, masks=clamped_masks, filler_comp_scalar=config.max_filler_scalar,
                     )
-                    clamped_no_filler_kl_loss = calc_kl_divergence_lm(
-                        pred=clamped_masked_component_logits_no_filler, target=target_logits
-                    ).item()
+
+                    clamped_no_filler_kl_loss = clamped_kl # Already calculated
                     clamped_filler_kl_loss = calc_kl_divergence_lm(
                         pred=clamped_masked_component_logits_filler, target=target_logits
                     ).item()
                     clamped_filler_max_kl_loss = calc_kl_divergence_lm(
                         pred=clamped_masked_component_logits_filler_max, target=target_logits
                     ).item()
+
                     clamped_filler_diff =  clamped_filler_kl_loss - clamped_no_filler_kl_loss
                     log_data["filler/clamped_kl_NO_filler"] = clamped_no_filler_kl_loss
                     log_data["filler/clamped_kl_WITH_filler"] = clamped_filler_kl_loss
@@ -391,15 +388,13 @@ def optimize(
                     ones_masked_component_logits_no_filler = model.forward_with_components(
                         batch, components=components, masks=ones_masks, filler_comp_scalar=0.0
                     )
-                    ones_masked_component_logits_filler = model.forward_with_components(
-                        batch, components=components, masks=ones_masks, filler_comp_scalar=1.0,
-                    )
+                    # ones_masked_component_logits_filler = model.forward_with_components(
+                    #     batch, components=components, masks=ones_masks, filler_comp_scalar=1.0,
+                    # )
                     ones_no_filler_kl_loss = calc_kl_divergence_lm(
                         pred=ones_masked_component_logits_no_filler, target=target_logits
                     ).item()
-                    ones_filler_kl_loss = calc_kl_divergence_lm(
-                        pred=ones_masked_component_logits_filler, target=target_logits
-                    ).item()
+                    ones_filler_kl_loss = all_components_kl # Already calculated
                     ones_filler_diff = ones_no_filler_kl_loss - ones_filler_kl_loss
                     log_data["filler/ones_kl_NO_filler"] = ones_no_filler_kl_loss
                     log_data["filler/ones_kl_WITH_filler"] = ones_filler_kl_loss
@@ -407,86 +402,36 @@ def optimize(
 
 
                     for comp_name, component in model.components.items():
-                        component_params = component.weight
+                        comp_W = component.weight
 
                         submodule = target_model.get_submodule(comp_name.replace("-", "."))
                         assert isinstance(submodule, nn.Linear | nn.Embedding)
                         target_params = submodule.weight
                 # submodule = target_model.get_submodule(comp_name.replace("-", "."))
 
-                        no_filler_diff = ((target_params - component_params)**2).sum() / component_params.numel()
-                        filler_diff = ((target_params - (component_params + component.filler_comp_weight.T))**2).sum() / component_params.numel()  
+                        no_filler_diff = ((target_params - comp_W)**2).sum() / comp_W.numel()
+                        filler_diff = ((target_params - (comp_W + component.filler_comp_weight.T))**2).sum() / comp_W.numel()  
                         log_data[f"filler/faithfulness{comp_name}_no_filler"] = no_filler_diff
                         log_data[f"filler/faithfulness{comp_name}_filler"] = filler_diff
                         log_data[f"filler/faithfulness{comp_name}_filler_diff_(higher_is_better)"] =  no_filler_diff - filler_diff
-
-                    # log_data["filler/ones_kl_loss_vs_target_no_filler"] = calc_kl_divergence_lm(
-                    #     pred=ones_masked_component_logits_no_filler, target=target_logits
-                    # ).item()
-                    # log_data["filler/ones_kl_loss_vs_target_filler"] = calc_kl_divergence_lm(
-                    #     pred=ones_masked_component_logits_filler, target=target_logits
-                    # ).item()
-
-
-                    # Also log the norm of the filler_comp for our linear cmoponent 
-                    for layer_name, component in components.items():
-                        if component.filler_comp_bool:
-                            log_data[f"filler/norm_filler_comp_{layer_name}"] = component.filler_comp_weight.norm().item()
-                # binned mask (do bin_num = 10)
-                bin_num = 5
-                # Bin the masks to nearest fraction (e.g., bin_num=10 -> 0.0, 0.1, 0.2, ..., 1.0)
-                binned_masks = {}
-                for k, v in causal_importances.items():
-                    # First clamp to [0, 1] range
-                    clamped = v.clamp(0, 1)
-                    # Round to nearest bin
-                    binned = torch.round(clamped * bin_num) / bin_num
-                    binned_masks[k] = binned
-
-                binned_masked_component_logits = model.forward_with_components(
-                    batch, components=components, masks=binned_masks
-                )
-                log_data["misc/binned_kl_loss_vs_target"] = calc_kl_divergence_lm(
-                    pred=binned_masked_component_logits, target=target_logits
-                ).item()
-
-                log_data["misc/all_components_mse_vs_target"] = calc_mean_squared_error(
-                    pred=all_components_logits, target=target_logits
-                ).item()
-                log_data["misc/masked_mse_vs_target"] = calc_mean_squared_error(
-                    pred=masked_component_logits, target=target_logits
-                ).item()
-                log_data["misc/stochastic_mse_vs_target"] = calc_mean_squared_error(
-                    pred=stochastic_component_logits, target=target_logits
-                ).item()
-                log_data["misc/clamped_mse_vs_target"] = calc_mean_squared_error(
-                    pred=clamped_masked_component_logits, target=target_logits
-                ).item()
-                noisy_masks = {k: torch.randn_like(v) * config.noise_log_std for k, v in causal_importances.items()}
-                noisy_masked_component_logits = model.forward_with_components(
-                    batch, components=components, masks=noisy_masks
-                )
-                log_data["misc/noisy_kl_loss_vs_target"] = calc_kl_divergence_lm(
-                    pred=noisy_masked_component_logits, target=target_logits
-                ).item()
-
-                if config.log_ce_losses:
-                    ce_losses = calc_ce_losses(
-                        model=model,
-                        batch=batch,
-                        components=components,
-                        masks=causal_importances,
-                        all_components_logits=all_components_logits,
-                        masked_component_logits=masked_component_logits,
-                        clamped_masked_component_logits=clamped_masked_component_logits,
-                        stochastic_component_logits=stochastic_component_logits,
-                        binned_masked_component_logits=binned_masked_component_logits,
-                        noisy_masked_component_logits=noisy_masked_component_logits,
-                        target_logits=target_logits,
-                        task=config.task_config.task_name,  # type: ignore[call-arg]
-                        labels=labels,
-                    )
-                    log_data.update(ce_losses)
+                        log_data[f"filler/norm_filler_comp_{comp_name}"] = component.filler_comp_weight.norm().item()
+                # if config.log_ce_losses:
+                #     ce_losses = calc_ce_losses(
+                #         model=model,
+                #         batch=batch,
+                #         components=components,
+                #         masks=causal_importances,
+                #         all_components_logits=all_components_logits,
+                #         masked_component_logits=masked_component_logits,
+                #         clamped_masked_component_logits=clamped_masked_component_logits,
+                #         stochastic_component_logits=stochastic_component_logits,
+                #         binned_masked_component_logits=binned_masked_component_logits,
+                #         noisy_masked_component_logits=noisy_masked_component_logits,
+                #         target_logits=target_logits,
+                #         task=config.task_config.task_name,  # type: ignore[call-arg]
+                #         labels=labels,
+                #     )
+                #     log_data.update(ce_losses)
 
                 if config.log_accuracies:
                     if config.task_config.task_name in ["lm", "cv"]:

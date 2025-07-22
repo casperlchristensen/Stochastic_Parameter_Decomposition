@@ -85,10 +85,10 @@ def main(config_path_or_obj: Path | str | Config) -> None:
     # run_name = f"pnorm={config.pnorm}_C={config.C}_min={config.importance_minimality_coeff}_lr={config.lr}"
     # run_name = f"clamp={config.clamped_recon_coeff:.1e}_all={config.all_components_recon_coeff:.1e}_fill={config.learned_filler_comp}_rem_ded={config.remove_dead_components}_fil_scalar={config.max_filler_scalar}_faith={config.faithfulness_coeff}"
     # run_name = f"p={config.pnorm}_min={config.importance_minimality_coeff:.1e}_all={config.all_components_recon_coeff:.1e}_faith={config.faithfulness_coeff}"
-    run_name = f"no_stoch"
+    run_name = f"b={config.batch_size}_loss_types={config.output_loss_types}_learned_filler={config.learned_filler_comp}"
     wandb.run.name = run_name
     # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-    out_dir = Path(__file__).parent / "out" / f"{run_name}"
+    out_dir = Path(__file__).parent / "out" / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {out_dir}")
 

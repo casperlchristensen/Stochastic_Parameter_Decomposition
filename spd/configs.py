@@ -1,6 +1,6 @@
 """Config classes of various types"""
 
-from typing import Any, ClassVar, Literal, Self
+from typing import Any, ClassVar, Literal, Self, Optional, Dict
 
 from pydantic import (
     BaseModel,
@@ -124,6 +124,10 @@ class GateMLPConfig(BaseModel):
         "If 0, use a single-layer gate.",
     )
 
+class LossConfig(BaseModel):
+    weight: float = 1.0
+    k: Optional[int] = None  # Only used for kl_top_k
+
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -238,9 +242,9 @@ class Config(BaseModel):
         default=False,
         description="If True, apply embedding recon jointly to embed & unembed matrices",
     )
-    output_loss_type: Literal["mse", "kl"] = Field(
-        ...,
-        description="Metric used to measure recon error between model outputs and targets",
+    output_loss_types: Dict[Literal["mse", "kl", "kl_top_k", "ce_diff"], LossConfig] = Field(
+        default_factory=dict,
+        description="Metrics used to measure recon error between model outputs and targets",
     )
 
     # --- Alternative to Stochastic ----
