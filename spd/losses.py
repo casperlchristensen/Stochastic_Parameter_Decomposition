@@ -619,7 +619,7 @@ def calculate_losses(
         )
         for loss_type in config.output_loss_types:
             loss_terms[f"loss/clamped_recon_{loss_type}"] = losses[loss_type].item()
-            total_loss += config.clamped_recon_coeff * losses[loss_type] * config.output_loss_types[loss_type].weight
+            total_loss += config.clamped_recon_coeff * abs(losses[loss_type]) * config.output_loss_types[loss_type].weight
 
         if config.filler_recon_coeff is not None and config.learned_filler_comp:
             clamped_logits_with_filler = model.forward_with_components(batch, components=components, masks=clamped_masks, filler_comp_scalar=1)
@@ -678,7 +678,7 @@ def calculate_losses(
             )
             for loss_type in config.output_loss_types:
                 loss_terms[f"loss/stochastic_recon_{loss_type}"] = losses[loss_type].item()
-                total_loss += config.stochastic_recon_coeff * losses[loss_type] * config.output_loss_types[loss_type].weight
+                total_loss += config.stochastic_recon_coeff * abs(losses[loss_type]) * config.output_loss_types[loss_type].weight
 
     
     # # Stochastic reconstruction loss
@@ -776,7 +776,7 @@ def calculate_losses(
         )
         for loss_type in config.output_loss_types:
             loss_terms[f"loss/all_components_recon_{loss_type}"] = losses[loss_type].item()
-            total_loss += config.all_components_recon_coeff * losses[loss_type] * config.output_loss_types[loss_type].weight
+            total_loss += config.all_components_recon_coeff * abs(losses[loss_type]) * config.output_loss_types[loss_type].weight
 
     # # Output reconstruction loss
     # if config.all_components_recon_coeff is not None:
