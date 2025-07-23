@@ -165,17 +165,34 @@ def calculate_possible_losses(
     
     for loss_type in config.output_loss_types:
         if loss_type == "kl":
-            losses["kl"] = config.output_loss_types[loss_type].weight * calc_kl_divergence_lm(pred=pred, target=target)
+            losses["kl"] = calc_kl_divergence_lm(pred=pred, target=target)
         elif loss_type == "kl_top_k":
             losses["kl_top_k"] = calc_kl_top_k(
                 pred=pred, target=target, k=config.output_loss_types[loss_type].k
-            ) * config.output_loss_types[loss_type].weight
-        elif loss_type == "ce_diff":
-            assert batch is not None and target_ce_loss is not None
-            losses["ce_diff"] = calc_ce_diff(
-                pred=pred, batch=batch, target_ce_loss=target_ce_loss
-            ) * config.output_loss_types[loss_type].weight
-    
+            )
+        elif loss_type == "ce_labels":
+            # Get the ground truth tokens (excluding the first token)
+            ground_truth_tokens = batch[:, 1:]  # Shape: (batch_size, seq_len-1)
+            
+            # Also trim the logits to match - remove the last position since we don't have a target for it
+            pred_trimmed = pred[:, :-1, :]      # Shape: (batch_size, seq_len-1, vocab_size)
+            target_trimmed = target[:, :-1, :]  # Shape: (batch_size, seq_len-1, vocab_size)
+            
+            # Gather logits for correct tokens
+            pred_correct_logits = torch.gather(pred_trimmed, -1, ground_truth_tokens.unsqueeze(-1)).squeeze(-1)
+            target_correct_logits = torch.gather(target_trimmed, -1, ground_truth_tokens.unsqueeze(-1)).squeeze(-1)
+            
+            # Compute log_softmax efficiently
+            pred_lse = torch.logsumexp(pred_trimmed, dim=-1)
+            target_lse = torch.logsumexp(target_trimmed, dim=-1)
+            
+            # Get probabilities for correct tokens
+            pred_log_probs_correct = pred_correct_logits - pred_lse
+            target_probs_correct = torch.exp(target_correct_logits - target_lse)
+            
+            # Compute cross-entropy loss
+            ce_loss = -pred_log_probs_correct * target_probs_correct.detach()
+            losses["ce_labels"] = ce_loss.mean()
     return losses
 
 def calc_kl_top_k(
@@ -183,23 +200,7 @@ def calc_kl_top_k(
     target: Float[Tensor, "... vocab"],
     k: int = 5
 ) -> Float[Tensor, ""]:
-    # """Calculate KL divergence only on top-k logits"""
-    # # Get top-k indices from target distribution
-    # target_probs = F.softmax(target, dim=-1)
-    # top_k_indices = torch.topk(target_probs, k=k, dim=-1).indices
-    
-    # # Create mask for top-k positions
-    # mask = torch.zeros_like(target_probs, dtype=torch.bool)
-    # mask.scatter_(-1, top_k_indices, True)
-    
-    # # Apply mask and renormalize
-    # masked_target = target.masked_fill(~mask, float('-inf'))
-    # masked_pred = pred.masked_fill(~mask, float('-inf'))
-    
-    # # Calculate KL on masked distributions
-    # return calc_kl_divergence_lm(pred=masked_pred, target=masked_target)
-    # """Calculate cross-entropy loss on top-k positions"""
-    # Get top-k indices from target distribution
+    #TODO Try different ways of doing this
     target_probs = F.softmax(target, dim=-1)
     top_k_values, top_k_indices = torch.topk(target_probs, k=k, dim=-1)
     
@@ -337,7 +338,6 @@ def calc_faithfulness_loss(
         target_params[comp_name] = submodule.weight
         component_params[comp_name] = component.weight
         if component.filler_comp_bool:
-            print("adding filler comp weight")
             component_params[comp_name] += component.filler_comp_weight.T
         scalers_params[comp_name] = scale_fn(
             submodule.weight
@@ -352,7 +352,10 @@ def calc_faithfulness_loss(
         device=device,
     )
     return faithfulness_loss, scaled_faithfulness_loss
-
+def calc_ce_loss(pred: Float[Tensor, "... vocab"], batch: Int[Tensor, "..."]) -> Float[Tensor, ""]:
+    flat_batch = batch[:, 1:].flatten()
+    flat_pred_logits = einops.rearrange(pred[:, :-1], "... vocab -> (...) vocab")
+    return F.cross_entropy(input=flat_pred_logits, target=flat_batch)
 
 def calc_ce_losses(
     model: ComponentModel,
@@ -583,7 +586,7 @@ def calculate_losses(
     loss_terms["loss/faithfulness"] = faithfulness_loss.item()
     loss_terms["loss/scaled_faithfulness"] = scaled_faithfulness_loss.item()
     
-    if "ce_diff" in config.output_loss_types:
+    if "ce_labels" in config.output_loss_types:
         # Remove the first token from the batch (since it's not predicted)
         flat_batch = batch[:, 1:].flatten()
         flat_target_logits = einops.rearrange(target_out[:, :-1], "... vocab -> (...) vocab")

@@ -177,7 +177,6 @@ class LinearComponent(nn.Module):
             )
             # Add the scaled filler component output to the final output
             out += filler_comp_output
-            print(" We are filler comp adding! specifically adding scalar ", rand_scalar)
 
         if self.bias is not None:
             out += self.bias

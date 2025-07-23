@@ -19,6 +19,7 @@ from spd.configs import Config
 from spd.log import logger
 from spd.losses import (
     calc_accuracies,
+    calc_ce_loss,
     calc_ce_losses,
     calculate_losses,
 )
@@ -353,6 +354,17 @@ def optimize(
                     pred=clamped_masked_component_logits, target=target_logits
                 ).item()
 
+                # Calc CE Diff
+                original_ce_loss = calc_ce_loss(target_logits, batch).item()
+                masked_ce_loss = calc_ce_loss(masked_component_logits, batch).item()
+                stochastic_ce_loss = calc_ce_loss(stochastic_component_logits, batch).item()
+                clamped_ce_loss = calc_ce_loss(clamped_masked_component_logits, batch).item()
+                all_ce_loss = calc_ce_loss(all_components_logits, batch).item()
+                log_data["misc/original_ce_loss"] = original_ce_loss
+                log_data["misc/masked_ce_diff"] = masked_ce_loss - original_ce_loss
+                log_data["misc/stochastic_ce_diff"] = stochastic_ce_loss - original_ce_loss
+                log_data["misc/clamped_ce_diff"] = clamped_ce_loss - original_ce_loss
+                log_data["misc/all_ce_diff"] = all_ce_loss - original_ce_loss
 
                 log_data["misc/all_components_kl_loss_vs_target"] = all_components_kl
                 log_data["misc/masked_kl_loss_vs_target"] = masked_kl
