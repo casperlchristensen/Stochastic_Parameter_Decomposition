@@ -10,7 +10,8 @@ seed: 0
 C: 1000
 n_mask_samples: 1
 # n_ci_mlp_neurons: 16
-target_module_patterns: ["transformer.h.3.mlp.c_fc"]
+# target_module_patterns: ["transformer.h.3.mlp.c_fc"]
+target_module_patterns: ["transformer.h.3.mlp.c_proj"]
 
 # Gate?
 gate_config:
@@ -23,7 +24,7 @@ gate_config:
 
 # --- Loss Coefficients ---
 # Weight faithfulness
-faithfulness_coeff: 30.0
+faithfulness_coeff: 300.0
 # faithfulness_coeff: 1
 # faithfulness_scale: rms
 faithfulness_scale: null
@@ -45,12 +46,12 @@ pannealing: false
 # Reconstruction
 recon_coeff: null
 # clamped_recon_coeff: 6e-1
-clamped_recon_coeff: 3.0
+clamped_recon_coeff: 1.0
 filler_recon_coeff: 1.0
 stochastic_recon_coeff: 1.0
 recon_layerwise_coeff: null
 stochastic_recon_layerwise_coeff: null
-all_components_recon_coeff: 3e-1
+all_components_recon_coeff: null
 # embedding_recon_coeff: 1
 embedding_recon_coeff: null
 is_embed_unembed_recon: false
@@ -62,9 +63,11 @@ output_loss_types:
   #   k: 5
   ce_labels:
     weight: 1.0
-    
+  # ce_diff:
+  #   weight: 1.0
+
 # --- Alternative to Stochastic ----
-learned_filler_comp: True
+learned_filler_comp: False
 # remove_dead_components: True
 remove_dead_components: False
 max_filler_scalar: 1.0
@@ -89,7 +92,7 @@ n_eval_steps: 100
 # print_freq: 200
 image_on_first_step: true
 image_freq: 5000
-print_freq: 500
+print_freq: 250
 check_dead_components_freq: 5000
 save_freq: null
 log_ce_losses: False

@@ -161,6 +161,7 @@ def create_data_loader(
     ddp_rank: int = 0,
     ddp_world_size: int = 1,
     to_lower: bool = True,
+    add_bos_token: bool = False,
 ) -> tuple[DataLoader[Any], PreTrainedTokenizer]:
     """Create a DataLoader for the given dataset.
 
@@ -209,7 +210,7 @@ def create_data_loader(
             tokenizer,
             max_length=dataset_config.n_ctx,
             column_name=dataset_config.column_name,
-            add_bos_token=False,
+            add_bos_token=add_bos_token,
             to_lower=to_lower,
         )
 

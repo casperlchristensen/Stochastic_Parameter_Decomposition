@@ -340,7 +340,6 @@ def optimize(
                     batch, components=components, masks=clamped_masks, filler_comp_scalar=0.0,
                 )
 
-                # Calculate KL losses
                 all_components_kl = calc_kl_divergence_lm(
                     pred=all_components_logits, target=target_logits
                 ).item()

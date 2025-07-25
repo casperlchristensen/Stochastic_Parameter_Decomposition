@@ -242,7 +242,7 @@ class Config(BaseModel):
         default=False,
         description="If True, apply embedding recon jointly to embed & unembed matrices",
     )
-    output_loss_types: Dict[Literal["mse", "kl", "kl_top_k", "ce_diff"], LossConfig] = Field(
+    output_loss_types: Dict[Literal["mse", "kl", "kl_top_k", "ce_labels"], LossConfig] = Field(
         default_factory=dict,
         description="Metrics used to measure recon error between model outputs and targets",
     )

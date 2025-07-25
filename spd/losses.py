@@ -171,28 +171,64 @@ def calculate_possible_losses(
                 pred=pred, target=target, k=config.output_loss_types[loss_type].k
             )
         elif loss_type == "ce_labels":
-            # Get the ground truth tokens (excluding the first token)
-            ground_truth_tokens = batch[:, 1:]  # Shape: (batch_size, seq_len-1)
+            # # Get the ground truth tokens (excluding the first token)
+            # ground_truth_tokens = batch[:, 1:]  # Shape: (batch_size, seq_len-1)
             
-            # Also trim the logits to match - remove the last position since we don't have a target for it
-            pred_trimmed = pred[:, :-1, :]      # Shape: (batch_size, seq_len-1, vocab_size)
-            target_trimmed = target[:, :-1, :]  # Shape: (batch_size, seq_len-1, vocab_size)
+            # # Also trim the logits to match - remove the last position since we don't have a target for it
+            # pred_trimmed = pred[:, :-1, :]      # Shape: (batch_size, seq_len-1, vocab_size)
+            # target_trimmed = target[:, :-1, :]  # Shape: (batch_size, seq_len-1, vocab_size)
             
-            # Gather logits for correct tokens
-            pred_correct_logits = torch.gather(pred_trimmed, -1, ground_truth_tokens.unsqueeze(-1)).squeeze(-1)
-            target_correct_logits = torch.gather(target_trimmed, -1, ground_truth_tokens.unsqueeze(-1)).squeeze(-1)
+            # # Gather logits for correct tokens
+            # pred_correct_logits = torch.gather(pred_trimmed, -1, ground_truth_tokens.unsqueeze(-1)).squeeze(-1)
+            # target_correct_logits = torch.gather(target_trimmed, -1, ground_truth_tokens.unsqueeze(-1)).squeeze(-1)
             
-            # Compute log_softmax efficiently
-            pred_lse = torch.logsumexp(pred_trimmed, dim=-1)
-            target_lse = torch.logsumexp(target_trimmed, dim=-1)
+            # # Compute log_softmax efficiently
+            # pred_lse = torch.logsumexp(pred_trimmed, dim=-1)
+            # target_lse = torch.logsumexp(target_trimmed, dim=-1)
             
-            # Get probabilities for correct tokens
-            pred_log_probs_correct = pred_correct_logits - pred_lse
-            target_probs_correct = torch.exp(target_correct_logits - target_lse)
+            # # Get probabilities for correct tokens
+            # pred_log_probs_correct = pred_correct_logits - pred_lse
+            # target_probs_correct = torch.exp(target_correct_logits - target_lse)
             
-            # Compute cross-entropy loss
-            ce_loss = -pred_log_probs_correct * target_probs_correct.detach()
-            losses["ce_labels"] = ce_loss.mean()
+            # # Compute cross-entropy loss
+            # ce_loss = -pred_log_probs_correct * target_probs_correct.detach()
+            # Get the ground truth tokens (excluding the first token for next-token prediction)
+            # ground_truth_tokens = batch[:, 1:].reshape(-1)  # Shape: (batch_size * seq_len)
+            
+            # # Flatten the logits to match
+            # pred_flat = pred[:, :-1].reshape(-1, pred.size(-1))     # Shape: (batch_size * seq_len, vocab_size)
+            # target_flat = target[:, :-1].reshape(-1, target.size(-1))  # Shape: (batch_size * seq_len, vocab_size)
+            
+            # # Convert logits to probabilities
+            # pred_probs = F.softmax(pred_flat, dim=-1)
+            # target_probs = F.softmax(target_flat, dim=-1)
+            
+            # # Gather the probabilities for the ground truth tokens
+            # pred_probs_for_correct = torch.gather(pred_probs, 1, ground_truth_tokens.unsqueeze(1)).squeeze(1)
+            # target_probs_for_correct = torch.gather(target_probs, 1, ground_truth_tokens.unsqueeze(1)).squeeze(1)
+            
+            # # Compute cross-entropy: -log(p_pred) where we want p_pred ≈ p_target
+            # # This encourages pred to assign similar probability to the correct token as target does
+            # ce_loss = -torch.log(pred_probs_for_correct + 1e-8) * target_probs_for_correct.detach()
+            
+            # ce-diff (original)
+            # flat_batch = batch[:, 1:].flatten()
+            # flat_pred = einops.rearrange(pred[:, :-1], "... vocab -> (...) vocab")
+            # pred_ce_loss = F.cross_entropy(input=flat_pred, target=flat_batch)
+            # ce_loss = abs(pred_ce_loss - target_ce_loss)
+
+            # flat_target = einops.rearrange(target[:, :-1], "... vocab -> (...) vocab")
+            # target_ce_loss = F.cross_entropy(input=flat_target, target=flat_batch, reduction="none").detach()
+            # specific ce-diff
+            flat_batch = batch[:, 1:].flatten()
+            flat_pred = einops.rearrange(pred[:, :-1], "... vocab -> (...) vocab")
+            ce_loss = F.cross_entropy(input=flat_pred, target=flat_batch)
+            # flat_batch = batch[:, 1:].flatten()
+            # flat_pred = einops.rearrange(pred[:, :-1], "... vocab -> (...) vocab")
+            # pred_ce_loss = F.cross_entropy(input=flat_pred, target=flat_batch, reduction="none")
+            # ce_loss = ((pred_ce_loss - target_ce_loss)**2).mean()
+
+            losses["ce_labels"] = ce_loss
     return losses
 
 def calc_kl_top_k(
@@ -587,10 +623,11 @@ def calculate_losses(
     loss_terms["loss/scaled_faithfulness"] = scaled_faithfulness_loss.item()
     
     if "ce_labels" in config.output_loss_types:
-        # Remove the first token from the batch (since it's not predicted)
-        flat_batch = batch[:, 1:].flatten()
-        flat_target_logits = einops.rearrange(target_out[:, :-1], "... vocab -> (...) vocab")
-        target_ce_loss = F.cross_entropy(input=flat_target_logits, target=flat_batch)
+        with torch.no_grad():
+            # Remove the first token from the batch (since it's not predicted)
+            flat_batch = batch[:, 1:].flatten()
+            flat_target_logits = einops.rearrange(target_out[:, :-1], "... vocab -> (...) vocab")
+            target_ce_loss = F.cross_entropy(input=flat_target_logits, target=flat_batch, reduction="none")
     else:
         target_ce_loss = None
 
